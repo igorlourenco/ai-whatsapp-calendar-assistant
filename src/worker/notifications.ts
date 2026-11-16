@@ -5,6 +5,8 @@ import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "./db/client";
 
 import { digestLog, reminderLog } from "./db/schema";
+import { loadState, pushTasks, saveState } from "./llm/state";
+import { claimNag, nagAt, pendingNags, releaseNag, taskSection, tasksDue, toTaskRef } from "./tasks";
 import { addDays, hhmmToMinutes, humanDatePt, localDate, localToUtc, toLocalParts } from "./time";
 
 type Send = (message: string) => Promise<void>;
@@ -23,7 +25,44 @@ const REMINDER_LOOKAHEAD_MS = 8 * 86_400_000;
 
 /** Send everything due at `now`: reminders and digests. Idempotent. */
 export async function runDue(ctx: Ctx, cfg: CronConfig, send: Send, now = new Date()) {
-  await Promise.all([sendReminders(ctx, send, now), sendDigests(ctx, cfg, send, now)]);
+  const results = await Promise.allSettled([
+    sendReminders(ctx, send, now),
+    sendDigests(ctx, cfg, send, now),
+    sendTaskNags(ctx, send, now),
+  ]);
+  const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason);
+  if (failed.length) throw new AggregateError(failed, "notifications failed");
+}
+
+/**
+ * Timed tasks: one WhatsApp nag at the due time. The nagged task becomes T1,
+ * so a bare "feito" / "adia pra amanhã" right after it resolves.
+ */
+async function sendTaskNags(ctx: Ctx, send: Send, now: Date) {
+  const failures: unknown[] = [];
+  const nagged = [];
+  for (const t of await pendingNags(ctx.db)) {
+    const at = nagAt(t, ctx.tz);
+    if (!at || at > now) continue;
+    if (!(await claimNag(ctx.db, t.id))) continue;
+    const late = now.getTime() - at.getTime() > 30 * 60_000;
+    const when = late ? ` (era pra ${localDate(at, ctx.tz) === localDate(now, ctx.tz) ? "" : `${humanDatePt(t.dueDate!)} `}${t.dueTime})` : "";
+    try {
+      await send(`⏰ *Tarefa:* ${t.title}${when}\n_Responda *feito* ou *adia pra …*_`);
+      nagged.push(t);
+    } catch (err) {
+      failures.push(err);
+      await releaseNag(ctx.db, t.id);
+    }
+  }
+  if (nagged.length) {
+    const today = localDate(now, ctx.tz);
+    const state = await loadState(ctx.db, now);
+    state.tasks = pushTasks(state.tasks ?? [], nagged.map((t) => toTaskRef(t, today)));
+    state.lastList = "tasks";
+    await saveState(ctx.db, state, now);
+  }
+  if (failures.length) throw new AggregateError(failures, "task nag failed");
 }
 
 /**
@@ -47,6 +86,13 @@ export async function nextWakeUp(ctx: Ctx, cfg: CronConfig, now = new Date()): P
       .where(gte(reminderLog.occurrenceStart, since)),
   ]);
   const sentKeys = new Set(sent.map((r) => `${r.eventId}:${r.occurrenceStart.getTime()}`));
+
+  for (const t of await pendingNags(ctx.db)) {
+    const at = nagAt(t, ctx.tz);
+    if (!at) continue;
+    if (at <= now) return now;
+    if (at < next) next = at;
+  }
 
   for (const o of occ) {
     const mins = o.event.reminderMinutes;
@@ -147,15 +193,20 @@ export async function morningDigest(ctx: Ctx, today: string): Promise<string> {
         })
         .join("\n")}`
     : "";
-  return `${head}\n${body}${peek}`;
+  const tasks = await tasksDue(ctx.db, today, today, true);
+  const todo = tasks.length ? `\n\n${taskSection(tasks, today, "📝 *Tarefas pra hoje*")}` : "";
+  return `${head}\n${body}${todo}${peek}`;
 }
 
 export async function eveningDigest(ctx: Ctx, tomorrow: string): Promise<string> {
   const occ = await ctx.store.findOccurrences(localToUtc(tomorrow, ctx.tz),
     localToUtc(addDays(tomorrow, 1), ctx.tz),
   );
-  if (!occ.length) return `🌙 Amanhã (${humanDatePt(tomorrow)}) tá livre. Boa noite! ✨`;
-  return `🌙 *Prévia de amanhã*\n\n${formatAgenda(occ, tomorrow, tomorrow, ctx.tz)}`;
+  const today = addDays(tomorrow, -1);
+  const tasks = await tasksDue(ctx.db, tomorrow, tomorrow);
+  const todo = tasks.length ? `\n\n${taskSection(tasks, today, "📝 *Tarefas pra amanhã*")}` : "";
+  if (!occ.length) return `🌙 Amanhã (${humanDatePt(tomorrow)}) tá livre de compromissos.${todo}\n\nBoa noite! ✨`;
+  return `🌙 *Prévia de amanhã*\n\n${formatAgenda(occ, tomorrow, tomorrow, ctx.tz)}${todo}`;
 }
 
 function humanMinutes(m: number): string {

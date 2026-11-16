@@ -1,5 +1,7 @@
 import type { StoreCategory, StoreEvent } from "../calendar/store";
 import type { Recurrence } from "../db/schema";
+import type { Task } from "../db/schema";
+import { getTask } from "../tasks";
 import { humanDatePt, localDate, localTime, shortDatePt } from "../time";
 import type { AppCtx, WriteRecord } from "./execute";
 
@@ -28,6 +30,26 @@ export async function renderConfirmations(ctx: AppCtx, writes: WriteRecord[]): P
           ? `🗑️ *Cancelado* só em ${shortDatePt(localDate(w.occurrenceStart, ctx.tz))}: ${w.title}`
           : `🗑️ *Apagado:* ${w.title}`,
       );
+    } else if (w.kind === "task") {
+      const key = `task:${w.taskId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const t = await getTask(ctx.db, w.taskId);
+      if (!t) throw new Error(`write verification failed: task ${w.taskId} not found after ${w.action}`);
+      if (w.action === "done") {
+        if (w.next) {
+          if (t.dueDate !== w.next) throw new Error(`write verification failed: task ${w.taskId} not moved to ${w.next}`);
+          blocks.push(`✅ *Feito:* ${t.title}\n🔁 próxima: ${humanDatePt(w.next)}${t.dueTime ? ` · ${t.dueTime}` : ""}`);
+        } else {
+          if (t.status !== "done") throw new Error(`write verification failed: task ${w.taskId} still open`);
+          blocks.push(`✅ *Feito:* ${t.title}`);
+        }
+        continue;
+      }
+      const head = { created: "📝 *Tarefa anotada*", updated: "✏️ *Tarefa atualizada*", exists: "ℹ️ *Já estava na lista*" }[w.action];
+      blocks.push(`${head}\n${describeTask(t)}`);
+    } else if (w.kind === "task_deleted") {
+      blocks.push(`🗑️ *Tarefa apagada:* ${w.title}`);
     } else {
       blocks.push(`🏷️ Categoria criada: ${w.label}`);
     }
@@ -57,6 +79,15 @@ function describe(ctx: AppCtx, ev: StoreEvent, cat: StoreCategory | null): strin
   if (ev.recurrence) lines.push(`🔁 ${describeRecurrence(ev.recurrence, startDay)}`);
   if (!ev.allDay && ev.reminderMinutes != null) lines.push(`⏰ lembrete ${ev.reminderMinutes} min antes`);
   if (!cat) lines.push("🏷️ sem categoria");
+  return lines.join("\n");
+}
+
+function describeTask(t: Task): string {
+  const lines = [`*${t.title}*`];
+  if (!t.dueDate) lines.push("🗓️ sem prazo");
+  else lines.push(`🗓️ ${humanDatePt(t.dueDate)}${t.dueTime ? ` · ⏰ aviso às ${t.dueTime}` : ""}`);
+  if (t.recurrence && t.dueDate) lines.push(`🔁 ${describeRecurrence(t.recurrence, t.dueDate)}`);
+  if (t.notes) lines.push(`📝 ${t.notes}`);
   return lines.join("\n");
 }
 

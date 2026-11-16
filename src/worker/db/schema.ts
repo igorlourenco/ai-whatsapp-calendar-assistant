@@ -125,9 +125,14 @@ export type DraftCreate = {
   reminder_minutes?: number | null;
 };
 export type FocusItem = { eventId: string; occurrenceStart: string; label: string };
+/** A task recently created/changed/listed, exposed to the model as T1, T2… */
+export type TaskRef = { taskId: string; label: string };
 export type PendingPick =
   | { action: "delete"; only_that_day?: boolean | null }
-  | { action: "update"; changes: Record<string, unknown> };
+  | { action: "update"; changes: Record<string, unknown> }
+  | { action: "complete_task" }
+  | { action: "delete_task" }
+  | { action: "update_task"; changes: Record<string, unknown> };
 
 /**
  * Events read from an image, shown to the user as a numbered preview and NOT
@@ -145,6 +150,40 @@ export const assistantState = sqliteTable("assistant_state", {
   focusAt: ts("focus_at"),
   batch: text("batch", { mode: "json" }).$type<PendingBatch | null>(),
   batchAt: ts("batch_at"),
+  taskFocus: text("task_focus", { mode: "json" }).$type<TaskRef[]>().notNull().default([]),
+  taskFocusAt: ts("task_focus_at"),
+  /** Which numbered list the user saw last, so a bare "o 2" means E2 or T2. */
+  lastList: text("last_list").$type<"events" | "tasks">(),
 });
+
+/**
+ * To-dos ("pagar boleto sexta", "me lembra de ligar pro banco 10h"). Unlike
+ * events they live here, not in iCloud: Apple doesn't expose the current
+ * Reminders app over CalDAV. A task has an optional due date/time, can
+ * repeat, and stays open until marked done.
+ */
+export const tasks = sqliteTable(
+  "tasks",
+  {
+    /** `<messageId>:<normalized title>` when created from a message (idempotent retries). */
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    /** YYYY-MM-DD in the configured timezone; null = no date. */
+    dueDate: text("due_date"),
+    /** HH:mm local; when set, a WhatsApp nag is sent at that time. */
+    dueTime: text("due_time"),
+    /** Repeating task: marking it done moves it to the next due date. */
+    recurrence: text("recurrence", { mode: "json" }).$type<Recurrence | null>(),
+    notes: text("notes"),
+    status: text("status").$type<"open" | "done">().notNull().default("open"),
+    /** Nag sent for the current due time (cleared whenever the due changes). */
+    remindedAt: ts("reminded_at"),
+    createdAt: ts("created_at").notNull().$defaultFn(now),
+    doneAt: ts("done_at"),
+  },
+  (t) => [index("tasks_status_due_idx").on(t.status, t.dueDate)],
+);
+
+export type Task = typeof tasks.$inferSelect;
 
 export type Category = typeof categories.$inferSelect;

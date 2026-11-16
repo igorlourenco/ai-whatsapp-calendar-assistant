@@ -1,4 +1,4 @@
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 
 import type { Db } from "./db/client";
 import {
@@ -8,6 +8,7 @@ import {
   inboundMessages,
   messageEvents,
   reminderLog,
+  tasks,
 } from "./db/schema";
 
 /*
@@ -23,16 +24,18 @@ const TABLES = {
   reminder_log: reminderLog,
   digest_log: digestLog,
   message_events: messageEvents,
+  tasks,
 } as const;
 
 /** Timestamp columns per table (JSON carries them as ISO strings). */
 const DATE_COLS: Record<keyof typeof TABLES, string[]> = {
   categories: ["createdAt"],
   inbound_messages: ["nextAttemptAt", "receivedAt", "processedAt"],
-  assistant_state: ["draftAt", "focusAt"],
+  assistant_state: ["draftAt", "focusAt", "batchAt", "taskFocusAt"],
   reminder_log: ["occurrenceStart", "sentAt"],
   digest_log: ["sentAt"],
   message_events: ["createdAt"],
+  tasks: ["remindedAt", "createdAt", "doneAt"],
 };
 
 export type ExportData = { exportedAt: string; tables: Partial<Record<keyof typeof TABLES, Record<string, unknown>[]>> };
@@ -46,6 +49,7 @@ export async function snapshot(db: Db) {
     reminders: await db.select().from(reminderLog).orderBy(desc(reminderLog.sentAt)).limit(10),
     digests: await db.select().from(digestLog).orderBy(desc(digestLog.sentAt)).limit(10),
     categories: await db.select().from(categories),
+    openTasks: await db.select().from(tasks).where(eq(tasks.status, "open")),
   };
 }
 

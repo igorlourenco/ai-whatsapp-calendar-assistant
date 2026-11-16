@@ -10,17 +10,35 @@ import {
 } from "../calendar/store";
 import type { Db } from "../db/client";
 import { messageEvents, type FocusItem, type PendingPick, type Recurrence } from "../db/schema";
+import {
+  completeTask,
+  createTask,
+  deleteTask,
+  findDuplicateTask,
+  formatTaskList,
+  getTask,
+  openTasks,
+  searchTasks,
+  taskId,
+  taskLine,
+  taskSection,
+  tasksDue,
+  toTaskRef,
+  updateTask,
+  type TaskPatch,
+} from "../tasks";
+import type { Task, TaskRef } from "../db/schema";
 import { addDays, diffDays, localDate, localDateTime, localTime, localToUtc, shortDatePt } from "../time";
 import { renderConfirmations } from "./confirm";
 import type { DeepSeekEnv } from "./deepseek";
 import { batchItems, parseBatchReply, previewMessage, type BatchAnswer, type CreateAction } from "./batch";
 import { extractActions, type Action } from "./extract";
 import type { Vision } from "./vision";
-import { loadState, pushFocus, saveState, toFocus, type State } from "./state";
+import { loadState, pushFocus, pushTasks, saveState, toFocus, type State } from "./state";
 
 export type AppCtx = {
   store: CalendarStore;
-  /** Neon: inbox, state, logs (events live in the store). */
+  /** Durable Object SQLite: inbox, state, tasks, logs (events live in the store). */
   db: Db;
   tz: string;
   defaultReminder: number;
@@ -31,7 +49,9 @@ export type AppCtx = {
 export type WriteRecord =
   | { kind: "event_saved"; action: "created" | "updated" | "exists"; eventId: string }
   | { kind: "event_deleted"; title: string; occurrenceStart: Date | null }
-  | { kind: "category"; action: "created"; label: string };
+  | { kind: "category"; action: "created"; label: string }
+  | { kind: "task"; action: "created" | "updated" | "exists" | "done"; taskId: string; next?: string | null }
+  | { kind: "task_deleted"; title: string };
 
 export const HELP_TEXT = `🤔 Não entendi. Exemplos:
 • _dentista sexta 15h_
@@ -39,7 +59,9 @@ export const HELP_TEXT = `🤔 Não entendi. Exemplos:
 • _aula de civil toda terça e quinta 19h às 22h_
 • _o que tenho amanhã?_
 • _muda o dentista pra 16h_
-• _cancela a academia de segunda_`;
+• _cancela a academia de segunda_
+• _me lembra de pagar o boleto sexta_
+• _tarefas_ · _feito o 2_`;
 
 export type Incoming = { text: string; mediaUrl?: string | null; mediaMime?: string | null };
 export type MediaDeps = {
@@ -170,6 +192,8 @@ type Turn = {
   shown: FocusItem[];
   /** Pending "qual deles?" from the previous message (its changes are reused). */
   pick: PendingPick | null;
+  /** Tasks as shown to the model this turn: refs T1… resolve against THIS list. */
+  shownTasks: TaskRef[];
   /** State after this message. Pending questions only survive if re-asked. */
   next: State;
 };
@@ -189,7 +213,15 @@ export async function executeActions(
     writes: [],
     shown: state.focus,
     pick: state.pick ?? null,
-    next: { draft: null, pick: null, focus: state.focus, batch: state.batch ?? null },
+    shownTasks: state.tasks ?? [],
+    next: {
+      draft: null,
+      pick: null,
+      focus: state.focus,
+      batch: state.batch ?? null,
+      tasks: state.tasks ?? [],
+      lastList: state.lastList ?? null,
+    },
   };
 
   const flushWrites = async () => {
@@ -203,6 +235,14 @@ export async function executeActions(
       if (f) items.push(f);
     }
     turn.next.focus = pushFocus(turn.next.focus, items);
+    const today = localDate(new Date(), ctx.tz);
+    const taskRefs: TaskRef[] = [];
+    for (const w of writes.reverse()) {
+      if (w.kind !== "task" || w.action === "done") continue;
+      const t = await getTask(ctx.db, w.taskId);
+      if (t && !taskRefs.some((r) => r.taskId === t.id)) taskRefs.push(toTaskRef(t, today));
+    }
+    if (taskRefs.length) turn.next.tasks = pushTasks(turn.next.tasks ?? [], taskRefs);
   };
 
   for (const a of actions) {
@@ -217,7 +257,7 @@ export async function executeActions(
       // and creates are idempotent. Only user-input problems are answered.
       if (!(err instanceof UserError)) throw err;
       await flushWrites();
-      parts.push(`❌ ${err.message} ${a.type === "create" ? "Nada foi salvo." : "Nada foi alterado."}`);
+      parts.push(`❌ ${err.message} ${a.type === "create" || a.type === "create_task" ? "Nada foi salvo." : "Nada foi alterado."}`);
     }
   }
   await flushWrites();
@@ -287,19 +327,138 @@ async function run(ctx: AppCtx, a: Action, turn: Turn): Promise<string | null> {
         category: a.category,
         query: a.search,
       });
-      if (occ.length) turn.next.focus = occ.slice(0, 10).map((o) => toFocus(o, ctx.tz));
-      return formatAgenda(occ, a.from, to, ctx.tz, {
+      if (occ.length) {
+        turn.next.focus = occ.slice(0, 10).map((o) => toFocus(o, ctx.tz));
+        turn.next.lastList = "events";
+      }
+      const agenda = formatAgenda(occ, a.from, to, ctx.tz, {
         emptyText: `🗓️ Nada marcado ${a.from === to ? `em ${shortDatePt(a.from)}` : `de ${shortDatePt(a.from)} a ${shortDatePt(to)}`} ✨`,
       });
+      // Tasks due in the range (and overdue ones when it includes today).
+      if (a.category || a.search) return agenda;
+      const today = localDate(new Date(), ctx.tz);
+      const due = await tasksDue(ctx.db, a.from, to, a.from <= today && today <= to);
+      if (!due.length) return agenda;
+      turn.next.tasks = due.slice(0, 10).map((t) => toTaskRef(t, today));
+      return `${agenda}\n\n${taskSection(due, today)}`;
     }
     case "create_category": {
       const c = await ctx.store.createCategory({ name: a.name, emoji: a.emoji });
       turn.writes.push({ kind: "category", action: "created", label: `${c.emoji} ${c.name}` });
       return null;
     }
+    case "create_task": {
+      const input = {
+        title: a.title,
+        dueDate: a.due_date ?? null,
+        dueTime: a.due_time ?? null,
+        recurrence: cleanRecurrence(a.recurrence),
+        notes: a.notes ?? null,
+      };
+      const dup = await findDuplicateTask(ctx.db, input);
+      if (dup) {
+        turn.writes.push({ kind: "task", action: "exists", taskId: dup.id });
+        return null;
+      }
+      const t = await createTask(ctx.db, taskId(ctx.sourceMessageId, a.title), input);
+      turn.writes.push({ kind: "task", action: "created", taskId: t.id });
+      if (ctx.sourceMessageId) {
+        await ctx.db
+          .insert(messageEvents)
+          .values({ messageId: ctx.sourceMessageId, eventId: `task:${t.id}`, label: `📝 ${taskLine(t, localDate(new Date(), ctx.tz))}` })
+          .onConflictDoNothing();
+      }
+      return null;
+    }
+    case "complete_task": {
+      const t = await resolveTask(ctx, a, turn, { action: "complete_task" });
+      if ("reply" in t) return t.reply;
+      const r = await completeTask(ctx.db, t.id, ctx.tz);
+      if (!r) throw new UserError("Essa tarefa não existe mais.");
+      turn.writes.push({ kind: "task", action: "done", taskId: t.id, next: r.next });
+      turn.next.tasks = (turn.next.tasks ?? []).filter((x) => x.taskId !== t.id || r.next);
+      return null;
+    }
+    case "update_task": {
+      const pickChanges = turn.pick?.action === "update_task" && a.ref ? (turn.pick.changes as TaskChanges) : {};
+      const changes: TaskChanges = { ...pickChanges, ...stripNulls(a.changes) };
+      const t = await resolveTask(ctx, a, turn, { action: "update_task", changes: stripNulls(a.changes) });
+      if ("reply" in t) return t.reply;
+      const patch: TaskPatch = {};
+      if (changes.title) patch.title = changes.title;
+      if (changes.notes) patch.notes = changes.notes;
+      if (changes.clear_due) patch.dueDate = null;
+      if (changes.due_date) patch.dueDate = changes.due_date;
+      if (changes.due_time) {
+        patch.dueTime = changes.due_time;
+        // "muda pra 15h" on an undated task → today.
+        if (!t.dueDate && !changes.due_date) patch.dueDate = localDate(new Date(), ctx.tz);
+      }
+      if (!Object.keys(patch).length) {
+        turn.next.tasks = pushTasks(turn.next.tasks ?? [], [toTaskRef(t, localDate(new Date(), ctx.tz))]);
+        return `❓ Mudar o quê em *${t.title}*? (data, horário, nome…)`;
+      }
+      const row = await updateTask(ctx.db, t.id, patch);
+      if (!row) throw new UserError("Essa tarefa não existe mais.");
+      turn.writes.push({ kind: "task", action: "updated", taskId: t.id });
+      return null;
+    }
+    case "delete_task": {
+      const t = await resolveTask(ctx, a, turn, { action: "delete_task" });
+      if ("reply" in t) return t.reply;
+      if (!(await deleteTask(ctx.db, t.id))) throw new UserError("Essa tarefa não existe mais.");
+      turn.writes.push({ kind: "task_deleted", title: t.title });
+      turn.next.tasks = (turn.next.tasks ?? []).filter((x) => x.taskId !== t.id);
+      return null;
+    }
+    case "list_tasks": {
+      const list = await openTasks(ctx.db);
+      const today = localDate(new Date(), ctx.tz);
+      if (list.length) {
+        turn.next.tasks = list.slice(0, 10).map((t) => toTaskRef(t, today));
+        turn.next.lastList = "tasks";
+      }
+      return formatTaskList(list, today);
+    }
     case "unknown":
       return HELP_TEXT;
   }
+}
+
+type TaskChanges = Extract<Action, { type: "update_task" }>["changes"];
+
+/**
+ * Same rules as events: a name (search) wins over a ref; several matches →
+ * numbered question, and the list becomes T1… for the answer.
+ */
+async function resolveTask(
+  ctx: AppCtx,
+  a: { ref?: string | null; search?: string | null },
+  turn: Turn,
+  pick: PendingPick,
+): Promise<Task | { reply: string }> {
+  const today = localDate(new Date(), ctx.tz);
+  if (a.search) {
+    const matches = await searchTasks(ctx.db, a.search);
+    if (matches.length === 1) return matches[0]!;
+    if (!matches.length) return { reply: `❓ Não achei nenhuma tarefa aberta com “${a.search}”. Nada foi alterado.` };
+    const shown = matches.slice(0, 9);
+    turn.next.tasks = shown.map((t) => toTaskRef(t, today));
+    turn.next.lastList = "tasks";
+    turn.next.pick = pick;
+    return {
+      reply: `❓ Achei ${matches.length} tarefas com “${a.search}”. Qual delas? (responde com o número)\n${shown.map((t, i) => `${i + 1}. ${taskLine(t, today)}`).join("\n")}`,
+    };
+  }
+  if (a.ref) {
+    const n = Number(/^T?(\d+)$/i.exec(a.ref.trim())?.[1]);
+    const ref = turn.shownTasks[n - 1];
+    if (!ref) return { reply: "❓ Não sei qual tarefa. Manda com o nome (ex: _feito o boleto_) ou peça _tarefas_ pra ver a lista." };
+    const t = await getTask(ctx.db, ref.taskId);
+    if (!t || t.status !== "open") return { reply: `❓ *${ref.label.split(" — ")[0]}* não está mais aberta. Nada foi alterado.` };
+    return t;
+  }
+  return { reply: "❓ Não sei qual tarefa. Manda com o nome (ex: _feito o boleto_) ou peça _tarefas_ pra ver a lista." };
 }
 
 /** Same title + same start already saved → don't duplicate (e.g. model re-creating a focus event). */
@@ -481,6 +640,7 @@ async function resolveTarget(
   // The numbered list becomes the focus, so "o 2" next message maps to E2.
   const shown = matches.slice(0, 9);
   turn.next.focus = shown.map((o) => toFocus(o, ctx.tz));
+  turn.next.lastList = "events";
   turn.next.pick = pick;
   const list = shown
     .map((o, i) => `${i + 1}. ${formatLine(o, localDate(o.start, ctx.tz), ctx.tz)} — ${shortDatePt(localDate(o.start, ctx.tz))}`)
