@@ -1,7 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ai-assistant-wpp",
-  "account_id": "4e11c166f9a37026be19ab4f5c194c59",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -14,18 +13,11 @@
   },
   // ⚠️ All app state lives in the Scheduler Durable Object's SQLite. Never add a
   // migration that renames or deletes "Scheduler" without first saving
-  // GET /debug/export (pnpm db:export).
+  // `pnpm db export`.
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Scheduler"] }],
   // Drizzle migrations are bundled as text and applied by the DO on startup.
-  "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }],
-  "vars": {
-    "TIMEZONE": "America/Araguaina",
-    "MORNING_DIGEST_TIME": "07:00",
-    "EVENING_DIGEST_TIME": "21:00",
-    "DEFAULT_REMINDER_MINUTES": "30",
-    "DEEPSEEK_MODEL": "deepseek-chat"
-  }
-  // Secrets (wrangler secret put …): DEBUG_TOKEN, DEEPSEEK_API_KEY,
-  // ZAPI_INSTANCE_ID, ZAPI_TOKEN, ZAPI_CLIENT_TOKEN, ZAPI_WEBHOOK_TOKEN,
-  // OWNER_PHONE, ICLOUD_USERNAME, ICLOUD_APP_PASSWORD
+  "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }]
+  // No "vars" on purpose: every setting (TIMEZONE, digest times, model…) is
+  // per deployment and lives in .dev.vars, uploaded by `pnpm configure` as
+  // secrets. See .dev.vars.example. Defaults: src/worker/config.ts.
 }

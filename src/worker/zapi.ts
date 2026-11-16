@@ -1,6 +1,6 @@
 /**
- * Z-API client. Same instance as Movisim: the instance's "on message received"
- * webhook points here; the bot only talks to OWNER_PHONE.
+ * Z-API client. The instance's "on message received" webhook points here; the
+ * bot only talks to OWNER_PHONE (the instance can be shared with other uses).
  */
 
 export type ZapiEnv = {

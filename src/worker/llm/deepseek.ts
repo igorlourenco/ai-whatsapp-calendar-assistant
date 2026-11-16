@@ -1,5 +1,7 @@
 /** Minimal DeepSeek client: one stateless JSON-mode completion. */
 
+import { DEFAULTS } from "../config";
+
 export type DeepSeekEnv = { DEEPSEEK_API_KEY: string; DEEPSEEK_MODEL?: string };
 
 export async function completeJson(env: DeepSeekEnv, system: string, user: string): Promise<unknown> {
@@ -10,7 +12,7 @@ export async function completeJson(env: DeepSeekEnv, system: string, user: strin
       Authorization: `Bearer ${env.DEEPSEEK_API_KEY}`,
     },
     body: JSON.stringify({
-      model: env.DEEPSEEK_MODEL || "deepseek-chat",
+      model: env.DEEPSEEK_MODEL || DEFAULTS.DEEPSEEK_MODEL,
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
