@@ -8,54 +8,50 @@ Bot pessoal de calendário: você manda mensagem no WhatsApp ("marca dentista se
 WhatsApp ─▶ Z-API (instância Movisim) ─▶ POST /webhooks/zapi?token=…
                                              │  só OWNER_PHONE, ignora grupo/fromMe/clientes
                                              ▼
-                                   Scheduler DO (inbox durável, em ordem, retry)
-                                             │
+                         Scheduler (Durable Object, instância única, SQLite embutido)
+                                             │  inbox durável: em ordem, retry, aviso explícito de falha
                                              ├─ DeepSeek: 1 chamada por mensagem, JSON estrito; contexto = estado
                                              │   montado pelo código (rascunho pendente, "qual deles?", eventos E1…),
                                              │   nunca o histórico de respostas
-                                             │   {actions: create | update | delete | query | create_category | web_link | unknown}
-                                             ├─ código valida (zod), executa, relê do banco
-                                             └─ resposta 100% gerada por código (o modelo nunca escreve texto pro usuário)
+                                             │   {actions: create | update | delete | query | create_category | unknown}
+                                             ├─ código valida (zod), executa no iCloud, relê o evento pra confirmar
+                                             ├─ resposta 100% gerada por código (o modelo nunca escreve texto pro usuário)
+                                             └─ um alarm só: próximo lembrete/resumo ou mensagem pendente
                                              ▼
-                    iCloud CalDAV (eventos)   +   Neon (fila, estado, logs, categoria→calendário)
-Scheduler (Durable Object) ─▶ alarm no próximo lembrete/resumo; Neon só acorda quando há o que enviar
+                      iCloud CalDAV (eventos)   +   SQLite do DO (fila, estado, logs, categoria→calendário)
 Cron diário ─▶ watchdog: arma o alarm se não houver nenhum
 ```
 
-- `src/worker/index.ts`: rotas (webhook, auth, API) + handler `scheduled`
+- `src/worker/index.ts`: webhook, rotas `/debug/*` e watchdog
+- `src/worker/scheduler.ts`: Durable Object (SQLite + migrations no startup, inbox, alarm, debug/backup)
 - `src/worker/llm/extract.ts`: prompt + schema das ações (a única coisa que o modelo faz)
 - `src/worker/llm/execute.ts`: executa ações, resolve evento alvo por palavra-chave, monta respostas
-- `src/worker/llm/confirm.ts`: confirmações lidas de volta do banco
+- `src/worker/llm/confirm.ts`: confirmações lidas de volta do store
 - `src/worker/llm/state.ts`: estado estruturado (rascunho 15 min, foco 30 min)
 - `src/worker/inbox.ts`: processamento das mensagens com retry/backoff e aviso de falha
-- `src/worker/calendar/`: CRUD, expansão de recorrência, formatação WhatsApp
-- `src/worker/scheduler.ts`: Durable Object com um alarm só, re-armado a cada mensagem e após cada disparo
 - `src/worker/notifications.ts`: o que enviar agora (`runDue`) e quando acordar (`nextWakeUp`); envios deduplicados em `reminder_log`/`digest_log` e liberados se o Z-API falhar
 - `src/worker/icloud/`: cliente CalDAV, leitura/escrita iCalendar (ical.js), store do iCloud
-- `src/worker/calendar/store.ts`: interface de armazenamento (iCloud em produção, Postgres em testes/eval)
-
-Modelo de evento: `start_at`/`end_at` (end exclusivo). Dia todo = meia-noite local até meia-noite após o último dia, então multi-dia é natural. Recorrência simples (diária/semanal com dias/mensal/anual, `until`/`count`) e `exdates` pra cancelar uma ocorrência.
+- `src/worker/calendar/store.ts`: interface de armazenamento; `memory-store.ts` é a implementação dos testes/eval
+- `src/worker/debug.ts`: snapshot, SQL só-leitura, export/import
 
 ## Setup
 
-1. **Neon**: crie um projeto, copie a connection string.
-2. `cp .dev.vars.example .dev.vars` e preencha (Z-API = mesmas credenciais do Movisim; `ZAPI_WEBHOOK_TOKEN` e `SESSION_SECRET` = `openssl rand -hex 32`).
-3. Banco:
+1. `cp .dev.vars.example .dev.vars` e preencha:
+   - Z-API: mesmas credenciais do Movisim; `ZAPI_WEBHOOK_TOKEN` e `DEBUG_TOKEN` = `openssl rand -hex 32`
+   - iCloud: Apple ID + senha de app (appleid.apple.com → Senhas de app)
+2. Secrets no Cloudflare:
    ```sh
-   pnpm install
-   pnpm db:migrate
-   pnpm db:seed        # 🎓 Faculdade, 💼 Trabalho, 🏠 Pessoal
-   ```
-4. Secrets no Cloudflare:
-   ```sh
-   for k in DATABASE_URL DEEPSEEK_API_KEY ZAPI_INSTANCE_ID ZAPI_TOKEN ZAPI_CLIENT_TOKEN ZAPI_WEBHOOK_TOKEN OWNER_PHONE SESSION_SECRET; do
-     grep "^$k=" .dev.vars | cut -d= -f2- | npx wrangler secret put $k
+   for k in DEEPSEEK_API_KEY ZAPI_INSTANCE_ID ZAPI_TOKEN ZAPI_CLIENT_TOKEN ZAPI_WEBHOOK_TOKEN OWNER_PHONE ICLOUD_USERNAME ICLOUD_APP_PASSWORD DEBUG_TOKEN; do
+     grep "^$k=" .dev.vars | cut -d= -f2- | tr -d '\n' | npx wrangler secret put $k
    done
    ```
-5. Deploy: `pnpm run deploy`. Ajuste `APP_URL` em `wrangler.jsonc` pra URL real e faça deploy de novo (é a base do link mágico).
-6. Aponte o webhook "Ao receber" da instância Z-API: `pnpm zapi:webhook https://<sua-url>`.
+3. `pnpm install && pnpm run deploy`. O Durable Object cria as tabelas sozinho na primeira requisição.
+4. Mapeie categorias → calendários do iCloud (insert-only):
+   ```sh
+   pnpm db import categories.json   # {"tables":{"categories":[{"slug":"faculdade","name":"Faculdade","emoji":"🎓","calendarUrl":"https://pXX-caldav.icloud.com/…/"}]}}
+   ```
+5. Aponte o webhook "Ao receber" da instância Z-API: `pnpm zapi:webhook https://<sua-url>`.
    Só mexe no webhook de mensagens recebidas; o de status do Movisim fica intacto.
-   Antes, confira no painel Z-API que esse webhook não está em uso por outra coisa.
 
 ## Uso
 
@@ -66,14 +62,36 @@ Modelo de evento: `start_at`/`end_at` (end exclusivo). Dia todo = meia-noite loc
 - "Muda o dentista pra 16h" / "Cancela a aula de quarta"
 - "marca oftalmo" → "❓ qual dia?" → "dia 10 às 15h"
 - Logo depois de salvar/consultar: "muda pra 11h", "me lembra 1h antes", "apaga esse"
-- "Cria categoria academia com 🏋️"
+- "Cria categoria academia com 🏋️" (cria um calendário novo no iCloud)
+
+## Inspeção, backup e restauração
+
+Os dados de controle vivem no SQLite do Durable Object. Acesso pelas rotas `/debug/*` (Bearer `DEBUG_TOKEN`), via CLI:
+
+```sh
+pnpm db state                                   # fila, estado, últimos envios, próximo alarm
+pnpm db "select * from inbound_messages order by received_at desc limit 5"
+pnpm db export > backup-$(date +%F).json        # dump completo em JSON
+pnpm db import backup.json                      # insert-only: nunca sobrescreve nem apaga
+```
+
+SQL é **só leitura**: um statement, começando com SELECT/WITH/EXPLAIN, executado numa transação que é sempre revertida (nem uma escrita escondida num CTE persiste).
+
+Restauração para qualquer momento dos últimos 30 dias (descarta tudo depois desse instante):
+
+```sh
+pnpm db restore 2026-11-16T12:00:00Z --yes
+```
+
+⚠️ Nunca renomeie/remova a classe `Scheduler` numa migration do `wrangler.jsonc` sem antes rodar `pnpm db export`: os dados vivem nela.
 
 ## Dev
 
 ```sh
-pnpm dev          # vite + worker local
-pnpm test         # unit + integração (PGlite em memória)
-pnpm tsx --env-file=.dev.vars scripts/icloud-smoke.ts  # teste ao vivo no iCloud (calendários temporários)
-pnpm eval         # DeepSeek real, banco em memória: taxa de acerto + confirmações falsas (deve ser 0)
+pnpm dev          # worker local (wrangler dev)
+pnpm test         # unit + integração (SQLite em memória via sql.js, mesmas migrations do DO)
 pnpm typecheck
+pnpm eval         # DeepSeek real, store em memória: taxa de acerto + confirmações falsas (deve ser 0)
+pnpm tsx --env-file=.dev.vars scripts/icloud-smoke.ts  # teste ao vivo no iCloud (calendários temporários)
+pnpm db:generate  # nova migration após mudar src/worker/db/schema.ts
 ```
