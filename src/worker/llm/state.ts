@@ -2,29 +2,44 @@ import { eq } from "drizzle-orm";
 
 import type { OccurrenceView } from "../calendar/store";
 import type { Db } from "../db/client";
-import { assistantState, type DraftCreate, type FocusItem, type PendingPick } from "../db/schema";
+import { assistantState, type DraftCreate, type FocusItem, type PendingBatch, type PendingPick } from "../db/schema";
 import { localDate, localTime, shortDatePt, weekdayNamePt } from "../time";
 
 const DRAFT_TTL_MS = 15 * 60_000;
 const FOCUS_TTL_MS = 30 * 60_000;
 const FOCUS_MAX = 10;
+/** Events read from an image wait this long for "sim / não / 1,3". */
+const BATCH_TTL_MS = 24 * 60 * 60_000;
 
-/** draft and pick are "pending questions": they live only until the next message. */
-export type State = { draft: DraftCreate | null; focus: FocusItem[]; pick?: PendingPick | null };
+/**
+ * draft and pick are "pending questions": they live only until the next
+ * message. batch (events read from an image) survives unrelated messages
+ * until it is answered, replaced by another image, or expires.
+ */
+export type State = {
+  draft: DraftCreate | null;
+  focus: FocusItem[];
+  pick?: PendingPick | null;
+  batch?: PendingBatch | null;
+};
 
 export async function loadState(db: Db, now = new Date()): Promise<State> {
   const [row] = await db.select().from(assistantState).where(eq(assistantState.id, 1)).limit(1);
-  if (!row) return { draft: null, focus: [], pick: null };
+  if (!row) return { draft: null, focus: [], pick: null, batch: null };
   const fresh = (at: Date | null, ttl: number) => !!at && now.getTime() - at.getTime() < ttl;
   return {
     draft: fresh(row.draftAt, DRAFT_TTL_MS) ? row.draft : null,
     pick: fresh(row.draftAt, DRAFT_TTL_MS) ? row.pick : null,
     focus: fresh(row.focusAt, FOCUS_TTL_MS) ? row.focus : [],
+    batch: fresh(row.batchAt, BATCH_TTL_MS) ? row.batch : null,
   };
 }
 
 export async function saveState(db: Db, s: State, now = new Date()): Promise<void> {
   const values = {
+    batch: s.batch ?? null,
+    // TTL counts from when the image arrived, never extended by later saves.
+    batchAt: s.batch ? new Date(s.batch.createdAt) : null,
     id: 1,
     draft: s.draft,
     pick: s.pick ?? null,

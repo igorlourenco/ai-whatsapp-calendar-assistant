@@ -75,6 +75,9 @@ export const inboundMessages = sqliteTable(
     messageId: text("message_id").primaryKey(),
     phone: text("phone").notNull().default(""),
     text: text("text").notNull().default(""),
+    /** Attached image (Z-API temporary URL) and its MIME type, if any. */
+    mediaUrl: text("media_url"),
+    mediaMime: text("media_mime"),
     status: text("status").$type<"pending" | "answered" | "done" | "failed">().notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
     reply: text("reply"),
@@ -126,6 +129,13 @@ export type PendingPick =
   | { action: "delete"; only_that_day?: boolean | null }
   | { action: "update"; changes: Record<string, unknown> };
 
+/**
+ * Events read from an image, shown to the user as a numbered preview and NOT
+ * saved until they answer "sim" / "não" / "1,3". items are validated create
+ * actions (see llm/extract.ts).
+ */
+export type PendingBatch = { messageId: string; createdAt: string; items: Record<string, unknown>[] };
+
 export const assistantState = sqliteTable("assistant_state", {
   id: integer("id").primaryKey().default(1),
   draft: text("draft", { mode: "json" }).$type<DraftCreate | null>(),
@@ -133,6 +143,8 @@ export const assistantState = sqliteTable("assistant_state", {
   draftAt: ts("draft_at"),
   focus: text("focus", { mode: "json" }).$type<FocusItem[]>().notNull().default([]),
   focusAt: ts("focus_at"),
+  batch: text("batch", { mode: "json" }).$type<PendingBatch | null>(),
+  batchAt: ts("batch_at"),
 });
 
 export type Category = typeof categories.$inferSelect;

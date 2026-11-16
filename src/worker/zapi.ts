@@ -22,7 +22,8 @@ export type ZapiReceived = {
   senderName?: string;
   text?: { message?: string };
   audio?: unknown;
-  image?: { caption?: string };
+  image?: { caption?: string; imageUrl?: string; mimeType?: string };
+  document?: { caption?: string; documentUrl?: string; mimeType?: string; fileName?: string };
 };
 
 export function digits(phone: string): string {

@@ -1,7 +1,7 @@
 import { asc, eq, inArray } from "drizzle-orm";
 
 import { inboundMessages, messageEvents } from "./db/schema";
-import type { AppCtx } from "./llm/execute";
+import type { AppCtx, Incoming } from "./llm/execute";
 
 /** Attempts per message before telling the user it failed. */
 export const MAX_ATTEMPTS = 3;
@@ -13,7 +13,7 @@ export const OPEN_STATUSES = ["pending", "answered"] as const;
 
 export type InboxDeps = {
   /** Run the assistant on a message; returns the reply text. */
-  handle: (ctx: AppCtx, text: string) => Promise<string>;
+  handle: (ctx: AppCtx, msg: Incoming) => Promise<string>;
   send: (phone: string, message: string) => Promise<void>;
   now?: () => number;
 };
@@ -49,9 +49,13 @@ async function processOne(ctx: AppCtx, deps: InboxDeps, row: Row, now: () => num
   try {
     let reply = row.reply;
     if (row.status === "pending" || reply == null) {
-      reply = row.text.trim()
-        ? await deps.handle({ ...ctx, sourceMessageId: row.messageId }, row.text.trim())
-        : "Por enquanto só entendo mensagem de texto 🙏";
+      reply =
+        row.text.trim() || row.mediaUrl
+          ? await deps.handle(
+              { ...ctx, sourceMessageId: row.messageId },
+              { text: row.text.trim(), mediaUrl: row.mediaUrl, mediaMime: row.mediaMime },
+            )
+          : "Por enquanto entendo texto e imagens 🙏 (áudio ainda não).";
       await ctx.db.update(inboundMessages).set({ status: "answered", reply }).where(where);
     }
     await deps.send(row.phone, reply);
@@ -87,7 +91,8 @@ async function processOne(ctx: AppCtx, deps: InboxDeps, row: Row, now: () => num
 
 /** Tell the user exactly what did and didn't get saved. */
 export async function failureNotice(ctx: AppCtx, row: Row): Promise<string> {
-  const quoted = row.text.length > 160 ? `${row.text.slice(0, 160)}…` : row.text;
+  const body = row.text || (row.mediaUrl ? "📷 imagem" : "");
+  const quoted = body.length > 160 ? `${body.slice(0, 160)}…` : body;
   const saved = await ctx.db
     .select({ label: messageEvents.label })
     .from(messageEvents)

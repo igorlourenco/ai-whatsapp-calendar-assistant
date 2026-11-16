@@ -12,6 +12,7 @@ import { inboundMessages } from "./db/schema";
 import { categoryRows, exportAll, importAll, readOnlyQuery, snapshot, type CategoryConfig, type ExportData } from "./debug";
 import { OPEN_STATUSES, processInbox } from "./inbox";
 import { handleMessage, type AppCtx } from "./llm/execute";
+import { fetchImage, workersAiVision } from "./llm/vision";
 import { nextWakeUp, runDue, type CronConfig } from "./notifications";
 import { sendText } from "./zapi";
 
@@ -21,7 +22,7 @@ const MIN_SLEEP_MS = 1_000;
 /** Retry delay when reminders/digests failed to send. */
 const DUE_RETRY_MS = 60_000;
 
-export type Inbound = { messageId: string; phone: string; text: string };
+export type Inbound = { messageId: string; phone: string; text: string; mediaUrl?: string | null; mediaMime?: string | null };
 
 /**
  * Single-instance Durable Object that owns all state and everything
@@ -64,7 +65,14 @@ export class Scheduler extends DurableObject<Env> {
   async enqueue(m: Inbound): Promise<void> {
     await this.db
       .insert(inboundMessages)
-      .values({ messageId: m.messageId, phone: m.phone, text: m.text, status: "pending" })
+      .values({
+        messageId: m.messageId,
+        phone: m.phone,
+        text: m.text,
+        mediaUrl: m.mediaUrl ?? null,
+        mediaMime: m.mediaMime ?? null,
+        status: "pending",
+      })
       .onConflictDoNothing();
     this.kicked = true;
     await this.ctx.storage.setAlarm(Date.now());
@@ -103,7 +111,11 @@ export class Scheduler extends DurableObject<Env> {
 
     try {
       await processInbox(ctx, {
-        handle: (c, text) => handleMessage(c, this.env, text),
+        handle: (c, msg) =>
+          handleMessage(c, this.env, msg, {
+            vision: workersAiVision(this.env.AI, settings(this.env).visionModel),
+            download: fetchImage,
+          }),
         send: (phone, msg) => sendText(this.env, phone, msg),
       });
     } catch (err) {

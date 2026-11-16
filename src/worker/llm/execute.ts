@@ -6,13 +6,16 @@ import {
   type CalendarStore,
   type EventInput,
   type OccurrenceView,
+  type StoreCategory,
 } from "../calendar/store";
 import type { Db } from "../db/client";
 import { messageEvents, type FocusItem, type PendingPick, type Recurrence } from "../db/schema";
 import { addDays, diffDays, localDate, localDateTime, localTime, localToUtc, shortDatePt } from "../time";
 import { renderConfirmations } from "./confirm";
 import type { DeepSeekEnv } from "./deepseek";
+import { batchItems, parseBatchReply, previewMessage, type BatchAnswer, type CreateAction } from "./batch";
 import { extractActions, type Action } from "./extract";
+import type { Vision } from "./vision";
 import { loadState, pushFocus, saveState, toFocus, type State } from "./state";
 
 export type AppCtx = {
@@ -38,19 +41,127 @@ export const HELP_TEXT = `🤔 Não entendi. Exemplos:
 • _muda o dentista pra 16h_
 • _cancela a academia de segunda_`;
 
+export type Incoming = { text: string; mediaUrl?: string | null; mediaMime?: string | null };
+export type MediaDeps = {
+  vision?: Vision;
+  download?: (url: string) => Promise<{ bytes: Uint8Array; mime: string }>;
+};
+
+const BATCH_REMINDER = "📷 _Os eventos da imagem ainda esperam sua resposta (sim / não / números)._";
+
 /**
  * One message in, one reply out. The only context is the structured State
- * (pending draft + recently touched events), built by code; the model never
- * sees past replies.
+ * (pending draft/pick/batch + recently touched events), built by code; the
+ * model never sees past replies.
  */
-export async function handleMessage(ctx: AppCtx, env: DeepSeekEnv, text: string): Promise<string> {
+export async function handleMessage(
+  ctx: AppCtx,
+  env: DeepSeekEnv,
+  input: Incoming | string,
+  media: MediaDeps = {},
+): Promise<string> {
+  const msg: Incoming = typeof input === "string" ? { text: input } : input;
+  const text = msg.text.trim();
   const state = await loadState(ctx.db);
   const categories = await ctx.store.listCategories();
+
+  if (msg.mediaUrl) {
+    const r = await handleImage(ctx, env, msg, media, state, categories);
+    await saveState(ctx.db, r.state);
+    return r.reply;
+  }
+
+  // Answer to an image preview? Decided by rules, never by the model.
+  if (state.batch) {
+    const items = batchItems(state.batch.items);
+    const answer = items.length ? parseBatchReply(text, items.length) : null;
+    if (answer) {
+      const r = await resolveBatch(ctx, state, items, answer);
+      await saveState(ctx.db, r.state);
+      return r.reply;
+    }
+    if (!items.length) state.batch = null; // unusable batch: drop it, handle the message normally
+  }
+
   const actions = await extractActions(env, text, { now: new Date(), tz: ctx.tz, categories, state });
   console.log("[extract]", JSON.stringify(actions));
   const result = await executeActions(ctx, actions, state);
   await saveState(ctx.db, result.state);
-  return result.reply;
+  return result.state.batch ? `${result.reply}\n\n${BATCH_REMINDER}` : result.reply;
+}
+
+/**
+ * Image: transcribe → same extractor → numbered preview. NOTHING is saved
+ * here; creates wait in state.batch for "sim / não / 1,3". Image text is
+ * content, not commands: only creates (previewed) and queries are honored.
+ */
+async function handleImage(
+  ctx: AppCtx,
+  env: DeepSeekEnv,
+  msg: Incoming,
+  media: MediaDeps,
+  state: State,
+  categories: StoreCategory[],
+): Promise<{ reply: string; state: State }> {
+  const keep = (reply: string) => ({ reply, state });
+  if (!media.vision || !media.download) return keep("🙏 Leitura de imagens não está ativada nesta instalação.");
+  if (msg.mediaMime && !msg.mediaMime.startsWith("image/")) {
+    return keep("🙏 Por enquanto leio texto e imagens. Se for PDF, manda um print da página.");
+  }
+
+  const { bytes, mime } = await media.download(msg.mediaUrl!);
+  const transcript = await media.vision(bytes, mime);
+  console.log("[vision]", transcript.length, JSON.stringify(transcript.slice(0, 300)));
+  if (!transcript) return keep("🤔 Não encontrei datas nem compromissos nessa imagem.");
+
+  const caption = msg.text.trim();
+  const prompt = `MENSAGEM COM IMAGEM. Texto lido da imagem:\n"""\n${transcript}\n"""${caption ? `\nLegenda escrita pelo usuário: "${caption}"` : ""}`;
+  const actions = await extractActions(env, prompt, {
+    now: new Date(),
+    tz: ctx.tz,
+    categories,
+    state: { draft: null, focus: [], pick: null },
+  });
+  console.log("[extract:image]", JSON.stringify(actions));
+
+  const creates = actions.filter((a): a is CreateAction => a.type === "create");
+  const items = creates.filter((a) => a.date);
+  const skipped = creates.filter((a) => !a.date).map((a) => a.title);
+  const queries = actions.filter((a) => a.type === "query");
+
+  const parts: string[] = [];
+  let next: State = { ...state, draft: null, pick: null };
+  if (queries.length) {
+    const r = await executeActions(ctx, queries, next);
+    parts.push(r.reply);
+    next = r.state;
+  }
+  if (items.length) {
+    const replaced = state.batch ? "\n\n_(a imagem anterior, ainda sem resposta, foi descartada)_" : "";
+    next.batch = { messageId: ctx.sourceMessageId ?? crypto.randomUUID(), createdAt: new Date().toISOString(), items };
+    parts.unshift(previewMessage(items, categories, skipped) + replaced);
+  } else if (!queries.length) {
+    const excerpt = transcript.length > 300 ? `${transcript.slice(0, 300)}…` : transcript;
+    parts.push(`🤔 Li a imagem, mas não achei compromissos com data:\n_${excerpt.replace(/_/g, "")}_`);
+  }
+  return { reply: parts.join("\n\n"), state: next };
+}
+
+/** Save the chosen events of a pending image batch (or discard it). */
+async function resolveBatch(
+  ctx: AppCtx,
+  state: State,
+  items: CreateAction[],
+  answer: BatchAnswer,
+): Promise<{ reply: string; state: State }> {
+  const cleared: State = { ...state, draft: null, pick: null, batch: null };
+  if (answer.kind === "none" || !items.length) {
+    return { reply: "🗑️ Ok, descartei os eventos da imagem. Nada foi salvo.", state: cleared };
+  }
+  const chosen = answer.kind === "all" ? items : answer.indexes.map((i) => items[i - 1]!).filter(Boolean);
+  // Idempotent per image message: a retry re-PUTs the same objects.
+  const r = await executeActions({ ...ctx, sourceMessageId: state.batch!.messageId }, chosen, cleared);
+  return { reply: r.reply, state: { ...r.state, batch: null } };
 }
 
 type Turn = {
@@ -78,7 +189,7 @@ export async function executeActions(
     writes: [],
     shown: state.focus,
     pick: state.pick ?? null,
-    next: { draft: null, pick: null, focus: state.focus },
+    next: { draft: null, pick: null, focus: state.focus, batch: state.batch ?? null },
   };
 
   const flushWrites = async () => {

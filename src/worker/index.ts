@@ -28,7 +28,11 @@ app.post("/webhooks/zapi", async (c) => {
     await scheduler(env).enqueue({
       messageId: body.messageId ?? `noid:${body.phone}:${body.momment ?? Date.now()}`,
       phone: body.phone,
-      text: body.text?.message ?? body.image?.caption ?? "",
+      text: body.text?.message ?? body.image?.caption ?? body.document?.caption ?? "",
+      // Photos, and images sent "as document" (uncompressed). Other files
+      // (PDF…) are stored too so the bot can say it can't read them yet.
+      mediaUrl: body.image?.imageUrl ?? body.document?.documentUrl ?? null,
+      mediaMime: body.image ? (body.image.mimeType ?? "image/jpeg") : (body.document?.mimeType ?? null),
     });
   } catch (err) {
     console.error("[webhook] enqueue failed", err);

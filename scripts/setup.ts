@@ -87,6 +87,7 @@ const SETTINGS: [key: keyof typeof DEFAULTS, help: string][] = [
   ["EVENING_DIGEST_TIME", "Tomorrow preview time (HH:mm)"],
   ["DEFAULT_REMINDER_MINUTES", "Default reminder before timed events (minutes)"],
   ["DEEPSEEK_MODEL", "DeepSeek model"],
+  ["VISION_MODEL", "Workers AI model that reads images"],
 ];
 const SECRET_KEYS = [...REQUIRED.map(([k]) => k), "ZAPI_WEBHOOK_TOKEN", "DEBUG_TOKEN", ...SETTINGS.map(([k]) => k)];
 

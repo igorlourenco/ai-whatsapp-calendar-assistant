@@ -8,6 +8,7 @@ export type Settings = {
   morningAt: string;
   eveningAt: string;
   defaultReminder: number;
+  visionModel: string;
 };
 
 export const DEFAULTS = {
@@ -16,6 +17,8 @@ export const DEFAULTS = {
   EVENING_DIGEST_TIME: "21:00",
   DEFAULT_REMINDER_MINUTES: "30",
   DEEPSEEK_MODEL: "deepseek-flash",
+  /** Workers AI model that transcribes images (picked by an eval, see README). */
+  VISION_MODEL: "@cf/mistralai/mistral-small-3.1-24b-instruct",
 } as const;
 
 type SettingsEnv = Partial<Record<keyof typeof DEFAULTS, string>>;
@@ -40,5 +43,6 @@ export function settings(env: SettingsEnv): Settings {
     morningAt: hhmm(env.MORNING_DIGEST_TIME, DEFAULTS.MORNING_DIGEST_TIME),
     eveningAt: hhmm(env.EVENING_DIGEST_TIME, DEFAULTS.EVENING_DIGEST_TIME),
     defaultReminder: Number.isFinite(reminder) && reminder >= 0 ? reminder : Number(DEFAULTS.DEFAULT_REMINDER_MINUTES),
+    visionModel: env.VISION_MODEL || DEFAULTS.VISION_MODEL,
   };
 }
