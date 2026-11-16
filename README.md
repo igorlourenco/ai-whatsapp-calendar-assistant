@@ -1,6 +1,6 @@
 # WhatsApp Calendar Assistant
 
-Manage your **Apple Calendar** and your **to-dos** by texting yourself on **WhatsApp**. Write like you'd write to a friend, and the assistant saves, moves, cancels and lists events in your iCloud calendars, keeps a task list that nags you when something is due, and every morning sends you the day's agenda.
+Manage your **Apple Calendar** and your **to-dos** by texting yourself on **WhatsApp**. Write like you'd write to a friend, and the assistant saves, moves, cancels and lists events in your iCloud calendars, keeps a to-do list that nags you until you say it's done, and every morning sends you the day's agenda.
 
 > The assistant talks **Brazilian Portuguese** (prompts, replies and digests). Code and docs are in English.
 
@@ -30,7 +30,7 @@ bot:  🗓️ Terça, 17 de novembro
 - **Natural language → calendar.** One-off, all-day, multi-day ("de 20 a 23") and recurring events, edits, cancellations (whole series or a single day), queries ("o que tenho sábado?", "semana que vem").
 - **Your Apple Calendar is the source of truth.** Events are read and written directly in iCloud over CalDAV, so they show up on your iPhone, Mac and Watch. Events you create on the iPhone show up in queries and digests too.
 - **Categories = iCloud calendars** (e.g. Work 💼, School 🎓, Personal 🏠), each with an emoji and a description the AI uses to pick one.
-- **Tasks (to-dos).** "me lembra de pagar o boleto sexta", "ligar pro banco amanhã 10h", "comprar ração" (no date), "pagar aluguel todo dia 5". Timed tasks get a WhatsApp nag at that time; today's and overdue tasks show up in the morning digest and in "o que tenho hoje?". `tarefas` lists them, `feito o 2` / `paguei o boleto` checks one off (a repeating one moves to its next date), `adia o banco pra sexta` reschedules.
+- **Tasks (to-dos) that nag until done.** "me lembra de pagar o boleto sexta", "ligar pro banco amanhã 10h", "pagar aluguel todo dia 5". Every task has a day (no date → "pra quando?"). From its time (or 30 min after the morning digest, for date-only tasks) you get a WhatsApp message every 30 min listing what's still pending, until you answer `feito`. Overdue tasks keep nagging the next days; nothing is sent after 22:00. `tarefas` lists them, `feito 2` / `feito todas` / `paguei o boleto` checks off (a repeating one moves to its next date), `adia o banco pra sexta` reschedules.
 - **Photos and screenshots.** Send an exam schedule, an event flyer, a chat screenshot or a photo of a note: the bot reads it and replies with a numbered preview (`📷 Encontrei 4 eventos… Salvo? sim / não / 1,3`). Nothing from an image is saved until you confirm.
 - **Follow-ups without a chat log.** "marca oftalmo" → "❓ qual dia?" → "dia 10 às 15h". "muda pra 16h" / "apaga esse" right after saving. "Achei 2… qual?" → "o 2".
 - **Daily digests** (morning agenda + tasks, evening preview) and **event reminders** both as native iPhone alerts and WhatsApp messages.
@@ -97,8 +97,8 @@ Re-run it anytime: it's idempotent. Use `pnpm configure --dry-run` to only valid
 - `muda o dentista pra 16h` · `cancela a aula de quarta` · `me lembra 1h antes`
 - `marca oftalmo` → *qual dia?* → `dia 10 às 15h`
 - `cria categoria academia 🏋️` (creates a new iCloud calendar)
-- `me lembra de ligar pro banco amanhã 10h` · `comprar ração` · `pagar aluguel todo dia 5`
-- `tarefas` → `feito o 2` · `paguei o boleto` · `adia o banco pra sexta` · `esquece a ração`
+- `me lembra de ligar pro banco amanhã 10h` · `comprar ração hoje` · `pagar aluguel todo dia 5`
+- `tarefas` → `feito o 2` · `feito todas` · `paguei o boleto` · `adia o banco pra sexta` · `esquece a ração`
 - 📷 a photo of a schedule → preview → `sim`, `não`, `1,3` or `todos menos 2`
 
 Text and images. Not yet: audio, PDFs (send a screenshot of the page).
@@ -115,6 +115,8 @@ Set in `.dev.vars`, uploaded by `pnpm configure` (defaults in `src/worker/config
 | `DEFAULT_REMINDER_MINUTES` | `30` | Native alert + WhatsApp reminder for timed events created by the bot |
 | `DEEPSEEK_MODEL` | `deepseek-flash` | |
 | `VISION_MODEL` | `@cf/mistralai/mistral-small-3.1-24b-instruct` | Workers AI model that reads images |
+| `TASK_NAG_MINUTES` | `30` | Pending tasks are re-sent every N minutes (min 5) |
+| `TASK_NAG_UNTIL` | `22:00` | No task nags after this time; they resume after the morning digest |
 
 Settings are deliberately not in `wrangler.jsonc`, so pulling updates never overwrites your configuration.
 
