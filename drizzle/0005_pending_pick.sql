@@ -1,0 +1,1 @@
+ALTER TABLE "assistant_state" ADD COLUMN "pick" jsonb;
