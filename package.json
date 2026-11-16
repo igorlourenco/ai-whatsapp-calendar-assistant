@@ -12,7 +12,8 @@
     "cf-typegen": "wrangler types",
     "eval": "tsx --env-file=.dev.vars scripts/eval.ts",
     "db": "tsx --env-file=.dev.vars scripts/db.ts",
-    "configure": "tsx scripts/setup.ts"
+    "configure": "tsx scripts/setup.ts",
+    "eval:images": "tsx --env-file=.dev.vars scripts/eval-images.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.4",
