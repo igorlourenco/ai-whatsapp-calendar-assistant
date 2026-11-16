@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 
-import type { ExportData } from "./debug";
+import type { CategoryConfig, ExportData } from "./debug";
 import { scheduler } from "./scheduler";
 import { samePhone, type ZapiReceived } from "./zapi";
 
@@ -17,8 +17,8 @@ app.post("/webhooks/zapi", async (c) => {
   if (body.fromMe || body.isGroup || body.isNewsletter || body.broadcast || !body.phone) {
     return c.json({ ok: true, ignored: "kind" });
   }
-  // Shared Movisim instance: every customer message lands here too. Only the
-  // owner gets the assistant; everyone else is left for the human inbox.
+  // The Z-API instance may be shared with another app/number: only
+  // OWNER_PHONE gets the assistant, every other sender is ignored.
   if (!samePhone(body.phone, env.OWNER_PHONE)) return c.json({ ok: true, ignored: "sender" });
 
   // Durable inbox: the Durable Object stores the message (idempotent on
@@ -73,6 +73,14 @@ app.get("/debug/export", async (c) => c.json(await scheduler(c.env).debugExport(
 app.post("/debug/import", async (c) => {
   try {
     return c.json(await scheduler(c.env).debugImport(await c.req.json<ExportData>()));
+  } catch (err) {
+    return fail(c, err);
+  }
+});
+
+app.put("/debug/categories", async (c) => {
+  try {
+    return c.json(await scheduler(c.env).debugSetCategories(await c.req.json<CategoryConfig[]>()));
   } catch (err) {
     return fail(c, err);
   }

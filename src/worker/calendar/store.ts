@@ -13,7 +13,16 @@ export type StoreCategory = {
   name: string;
   emoji: string;
   color: string;
+  /** What belongs in this category (helps the model choose). */
+  description: string | null;
+  /** Fallback when nothing else fits. */
+  isDefault: boolean;
 };
+
+/** The category events fall back to: the one marked default, else the first. */
+export function defaultCategory<T extends StoreCategory>(cats: T[]): T | null {
+  return cats.find((c) => c.isDefault) ?? cats[0] ?? null;
+}
 
 export type StoreEvent = {
   /** Opaque id: iCloud object URL (in-memory store: uuid). */

@@ -2,6 +2,7 @@ import type { Recurrence } from "../db/schema";
 import { expandOccurrences } from "./recurrence";
 import {
   UserError,
+  defaultCategory,
   normText,
   resolveTimes,
   slugify,
@@ -22,9 +23,15 @@ type Row = StoreEvent & { categoryId: string | null; sourceMessageId: string | n
 export function memoryStore(
   tz: string,
   defaultReminder: number,
-  seed: { slug: string; name: string; emoji: string; color?: string }[] = [],
+  seed: { slug: string; name: string; emoji: string; color?: string; description?: string; isDefault?: boolean }[] = [],
 ): CalendarStore & { all(): Row[] } {
-  const cats: StoreCategory[] = seed.map((c) => ({ id: crypto.randomUUID(), color: "#64748b", ...c }));
+  const cats: StoreCategory[] = seed.map((c) => ({
+    id: crypto.randomUUID(),
+    color: "#64748b",
+    description: null,
+    isDefault: false,
+    ...c,
+  }));
   const rows: Row[] = [];
 
   const findCat = (n: string | null | undefined) => {
@@ -57,7 +64,7 @@ export function memoryStore(
     async createCategory({ name, emoji, color }) {
       const existing = findCat(name);
       if (existing) return existing;
-      const c = { id: crypto.randomUUID(), slug: slugify(name), name: name.trim(), emoji, color: color ?? "#64748b" };
+      const c = { id: crypto.randomUUID(), slug: slugify(name), name: name.trim(), emoji, color: color ?? "#64748b", description: null, isDefault: false };
       cats.push(c);
       return c;
     },
@@ -89,7 +96,7 @@ export function memoryStore(
         );
         if (same) return view(same);
       }
-      const cat = findCat(input.category) ?? findCat("pessoal");
+      const cat = findCat(input.category) ?? defaultCategory(cats);
       const row: Row = {
         id: crypto.randomUUID(),
         title,

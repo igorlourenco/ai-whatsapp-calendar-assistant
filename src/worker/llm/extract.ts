@@ -106,10 +106,18 @@ ${state.focus.map((f, i) => `E${i + 1} = ${f.label}`).join("\n")}
   return parts.length ? `\nContexto atual (estado do sistema, não é conversa):\n${parts.join("\n\n")}\n` : "";
 }
 
+export type PromptCategory = {
+  slug: string;
+  emoji: string;
+  name: string;
+  description?: string | null;
+  isDefault?: boolean;
+};
+
 export function buildPrompt(
   now: Date,
   tz: string,
-  categories: { slug: string; emoji: string; name: string }[],
+  categories: PromptCategory[],
   state: State = { draft: null, focus: [] },
 ) {
   const today = localDate(now, tz);
@@ -117,7 +125,10 @@ export function buildPrompt(
     const d = addDays(today, i);
     return `${d} = ${humanDatePt(d)}${i === 0 ? " (hoje)" : i === 1 ? " (amanhã)" : ""}`;
   }).join("\n");
-  const cats = categories.map((c) => `${c.slug} (${c.emoji} ${c.name})`).join(", ") || "(nenhuma)";
+  const cats =
+    categories
+      .map((c) => `- ${c.slug} (${c.emoji} ${c.name})${c.description ? `: ${c.description}` : ""}${c.isDefault ? " [padrão]" : ""}`)
+      .join("\n") || "(nenhuma)";
 
   // Static rules first, everything that changes per call (time, dates,
   // categories, context) last: DeepSeek bills a repeated prompt PREFIX at the
@@ -126,7 +137,7 @@ export function buildPrompt(
 
 Datas: use SEMPRE a tabela de datas no final para "hoje", "sexta", "sábado que vem", "semana que vem"; nunca calcule dia da semana de cabeça. Datas sem ano: a próxima ocorrência a partir de hoje.
 
-Categoria: use um slug da lista no final, a que melhor encaixa (faculdade = aulas, provas, trabalhos, compromissos acadêmicos; trabalho = emprego/reuniões; pessoal = resto). Se o usuário citar explicitamente uma categoria que não existe, use create_category antes do create.
+Categoria: use o slug da lista "Categorias" no final cuja descrição melhor encaixa. Na dúvida, use a marcada [padrão]. Se o usuário citar explicitamente uma categoria que não existe, use create_category antes do create.
 
 Formato: {"actions": [ ... ]} com um ou mais itens:
 
@@ -156,7 +167,8 @@ Uma mensagem com vários pedidos gera várias ações, na ordem.
 Tabela de datas:
 ${days}
 
-Categorias: ${cats}
+Categorias:
+${cats}
 
 Agora: ${today} ${localTime(now, tz)} (${tz}).
 ${contextBlock(state)}`;
@@ -166,7 +178,7 @@ ${contextBlock(state)}`;
 export async function extractActions(
   env: DeepSeekEnv,
   text: string,
-  ctx: { now: Date; tz: string; categories: { slug: string; emoji: string; name: string }[]; state?: State },
+  ctx: { now: Date; tz: string; categories: PromptCategory[]; state?: State },
 ): Promise<Action[]> {
   const prompt = buildPrompt(ctx.now, ctx.tz, ctx.categories, ctx.state);
   let lastError = "";

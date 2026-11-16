@@ -24,7 +24,7 @@ const tag = Date.now().toString(36);
 const calA = await createCalendar(env, home, `zz-teste-bot-${tag}-a`, "#FF9500");
 const calB = await createCalendar(env, home, `zz-teste-bot-${tag}-b`, "#63DA38");
 await db.insert(schema.categories).values([
-  { slug: "pessoal", name: "Pessoal", emoji: "🏠", calendarUrl: calA },
+  { slug: "pessoal", name: "Pessoal", emoji: "🏠", calendarUrl: calA, isDefault: true },
   { slug: "faculdade", name: "Faculdade", emoji: "🎓", calendarUrl: calB },
 ]);
 const store = icloudStore(env, db, TZ, 30);

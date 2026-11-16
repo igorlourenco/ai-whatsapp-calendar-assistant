@@ -13,9 +13,9 @@ import { localDateTime, localToUtc } from "./time";
 
 const TZ = "America/Araguaina";
 const store = memoryStore(TZ, 30, [
-  { slug: "faculdade", name: "Faculdade", emoji: "🎓" },
-  { slug: "trabalho", name: "Trabalho", emoji: "💼" },
-  { slug: "pessoal", name: "Pessoal", emoji: "🏠" },
+  { slug: "faculdade", name: "Faculdade", emoji: "🎓", description: "aulas, provas, trabalhos e compromissos acadêmicos" },
+  { slug: "trabalho", name: "Trabalho", emoji: "💼", description: "emprego, reuniões" },
+  { slug: "pessoal", name: "Pessoal", emoji: "🏠", description: "todo o resto", isDefault: true },
 ]);
 let ctx: AppCtx;
 

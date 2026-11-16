@@ -24,7 +24,7 @@ export type Recurrence = {
 /** Category ↔ iCloud calendar, plus the emoji shown on WhatsApp. */
 export const categories = sqliteTable("categories", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  /** Lowercase, accent-free key the model refers to (e.g. "faculdade"). */
+  /** Lowercase, accent-free key the model refers to (e.g. "work"). */
   slug: text("slug").notNull().unique(),
   name: text("name").notNull(),
   emoji: text("emoji").notNull(),
@@ -32,6 +32,10 @@ export const categories = sqliteTable("categories", {
   color: text("color").notNull().default("#64748b"),
   /** iCloud calendar collection URL. */
   calendarUrl: text("calendar_url").unique(),
+  /** What belongs here, in the user's words; shown to the model to pick a category. */
+  description: text("description"),
+  /** Where events go when the message doesn't fit any category. */
+  isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
   createdAt: ts("created_at").notNull().$defaultFn(now),
 });
 

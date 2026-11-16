@@ -2,6 +2,7 @@ import { isNotNull } from "drizzle-orm";
 
 import {
   UserError,
+  defaultCategory,
   normText,
   resolveTimes,
   slugify,
@@ -34,8 +35,6 @@ import {
   withUid,
 } from "./ics";
 
-/** Writes go here when the requested category is unknown. */
-const DEFAULT_CATEGORY = "pessoal";
 const PALETTE = ["#FF2968", "#FF9500", "#FFCC00", "#63DA38", "#1BADF8", "#CC73E1", "#A2845E"];
 
 type Cat = StoreCategory & { calendarUrl: string };
@@ -50,7 +49,16 @@ export function icloudStore(env: ICloudEnv, db: Db, tz: string, defaultReminder:
   async function cats(): Promise<Cat[]> {
     if (!catCache) {
       const rows = await db.select().from(categories).where(isNotNull(categories.calendarUrl));
-      catCache = rows.map((r) => ({ id: r.id, slug: r.slug, name: r.name, emoji: r.emoji, color: r.color, calendarUrl: r.calendarUrl! }));
+      catCache = rows.map((r) => ({
+        id: r.id,
+        slug: r.slug,
+        name: r.name,
+        emoji: r.emoji,
+        color: r.color,
+        description: r.description,
+        isDefault: r.isDefault,
+        calendarUrl: r.calendarUrl!,
+      }));
     }
     return catCache;
   }
@@ -117,7 +125,7 @@ export function icloudStore(env: ICloudEnv, db: Db, tz: string, defaultReminder:
         .onConflictDoUpdate({ target: categories.slug, set: { calendarUrl: url, emoji, color: hex } })
         .returning();
       catCache = null;
-      return { id: row!.id, slug: row!.slug, name: row!.name, emoji: row!.emoji, color: row!.color };
+      return { id: row!.id, slug: row!.slug, name: row!.name, emoji: row!.emoji, color: row!.color, description: null, isDefault: false };
     },
 
     async findOccurrences(from, to, opts = {}) {
@@ -154,8 +162,9 @@ export function icloudStore(env: ICloudEnv, db: Db, tz: string, defaultReminder:
     },
 
     async createEvent(input) {
-      const cat = (await findCat(input.category)) ?? (await findCat(DEFAULT_CATEGORY)) ?? (await cats())[0];
-      if (!cat) throw new Error("Nenhum calendário do iCloud mapeado");
+      // Unknown category never blocks a save: it goes to the default calendar.
+      const cat = (await findCat(input.category)) ?? defaultCategory(await cats());
+      if (!cat) throw new Error("No iCloud calendar mapped to a category (run `pnpm configure`)");
       const t = resolveTimes(tz, input);
       const uid = await uidFor(input);
       const href = `${cat.calendarUrl}${uid}.ics`;
@@ -209,7 +218,7 @@ export function icloudStore(env: ICloudEnv, db: Db, tz: string, defaultReminder:
         else if (m.allDay && patch.reminderMinutes === undefined) p.reminderMinutes = defaultReminder;
       }
 
-      let ics = patchIcs(cur.obj.ics, p);
+      let ics = patchIcs(cur.obj.ics, p, tz);
       const targetCat = patch.category ? await findCat(patch.category) : null;
       const currentCat = await catOfHref(id);
       if (targetCat && currentCat && targetCat.calendarUrl !== currentCat.calendarUrl) {
@@ -230,7 +239,7 @@ export function icloudStore(env: ICloudEnv, db: Db, tz: string, defaultReminder:
         // Edited on the iPhone in between: re-read and re-apply once.
         const fresh = await read(id);
         if (!fresh) return null;
-        ics = patchIcs(fresh.obj.ics, p);
+        ics = patchIcs(fresh.obj.ics, p, tz);
         await putObject(env, id, ics, fresh.obj.etag || undefined);
       }
       const saved = await read(id);

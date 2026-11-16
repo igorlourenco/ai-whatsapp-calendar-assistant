@@ -101,3 +101,38 @@ export async function importAll(db: Db, data: ExportData) {
   }
   return { inserted };
 }
+
+export type CategoryConfig = {
+  slug: string;
+  name: string;
+  emoji: string;
+  calendarUrl: string;
+  color?: string | null;
+  description?: string | null;
+  isDefault?: boolean;
+};
+
+/**
+ * Validate a category → iCloud calendar mapping (used by `pnpm configure`) and
+ * build the rows. Exactly one category ends up as default. The caller writes
+ * them atomically (delete + insert in one transaction).
+ */
+export function categoryRows(list: CategoryConfig[]) {
+  if (!Array.isArray(list) || !list.length) throw new Error("at least one category is required");
+  for (const c of list) {
+    if (!c.slug || !c.name || !c.emoji || !c.calendarUrl) throw new Error(`incomplete category: ${JSON.stringify(c)}`);
+  }
+  if (new Set(list.map((c) => c.slug)).size !== list.length) throw new Error("duplicate slug");
+  if (new Set(list.map((c) => c.calendarUrl)).size !== list.length) throw new Error("duplicate calendarUrl");
+  const defaultSlug = list.find((c) => c.isDefault)?.slug ?? list[0]!.slug;
+  const rows = list.map((c) => ({
+    slug: c.slug,
+    name: c.name,
+    emoji: c.emoji,
+    calendarUrl: c.calendarUrl,
+    color: c.color ?? "#64748b",
+    description: c.description ?? null,
+    isDefault: c.slug === defaultSlug,
+  }));
+  return { rows, defaultSlug };
+}

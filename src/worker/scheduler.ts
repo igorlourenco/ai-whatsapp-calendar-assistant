@@ -4,11 +4,12 @@ import { drizzle, type DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlit
 import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
 import migrations from "../../drizzle/migrations.js";
+import { settings } from "./config";
 import { makeCtx } from "./context";
 import type { Db } from "./db/client";
 import * as schema from "./db/schema";
 import { inboundMessages } from "./db/schema";
-import { exportAll, importAll, readOnlyQuery, snapshot, type ExportData } from "./debug";
+import { categoryRows, exportAll, importAll, readOnlyQuery, snapshot, type CategoryConfig, type ExportData } from "./debug";
 import { OPEN_STATUSES, processInbox } from "./inbox";
 import { handleMessage, type AppCtx } from "./llm/execute";
 import { nextWakeUp, runDue, type CronConfig } from "./notifications";
@@ -55,7 +56,8 @@ export class Scheduler extends DurableObject<Env> {
   }
 
   private cfg(): CronConfig {
-    return { morningAt: this.env.MORNING_DIGEST_TIME, eveningAt: this.env.EVENING_DIGEST_TIME };
+    const { morningAt, eveningAt } = settings(this.env);
+    return { morningAt, eveningAt };
   }
 
   /** Store a WhatsApp message (idempotent on messageId) and process ASAP. */
@@ -139,6 +141,19 @@ export class Scheduler extends DurableObject<Env> {
     const result = await importAll(this.db as unknown as Db, data);
     // Best-effort: the import itself is done; a failing iCloud read must not
     // turn it into an error (the next alarm/watchdog re-arms anyway).
+    const nextAlarm = await this.reschedule().catch((err) => `not rescheduled: ${err}`);
+    return { ...result, nextAlarm };
+  }
+
+  /** Replace the category → calendar mapping (pnpm configure). */
+  async debugSetCategories(list: CategoryConfig[]) {
+    const { rows, defaultSlug } = categoryRows(list);
+    // Atomic: either the whole new mapping is in place or the old one stays.
+    this.ctx.storage.transactionSync(() => {
+      this.db.delete(schema.categories).run();
+      this.db.insert(schema.categories).values(rows).run();
+    });
+    const result = { categories: rows.length, default: defaultSlug };
     const nextAlarm = await this.reschedule().catch((err) => `not rescheduled: ${err}`);
     return { ...result, nextAlarm };
   }

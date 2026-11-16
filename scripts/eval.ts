@@ -75,9 +75,9 @@ type Store = ReturnType<typeof memoryStore>;
 
 async function freshCtx(): Promise<AppCtx & { store: Store }> {
   const store = memoryStore(TZ, 30, [
-    { slug: "faculdade", name: "Faculdade", emoji: "🎓" },
-    { slug: "trabalho", name: "Trabalho", emoji: "💼" },
-    { slug: "pessoal", name: "Pessoal", emoji: "🏠" },
+    { slug: "faculdade", name: "Faculdade", emoji: "🎓", description: "aulas, provas, trabalhos e compromissos acadêmicos" },
+    { slug: "trabalho", name: "Trabalho", emoji: "💼", description: "emprego, reuniões" },
+    { slug: "pessoal", name: "Pessoal", emoji: "🏠", description: "todo o resto", isDefault: true },
   ]);
   return { store, db: await memoryDb(), tz: TZ, defaultReminder: 30 };
 }
