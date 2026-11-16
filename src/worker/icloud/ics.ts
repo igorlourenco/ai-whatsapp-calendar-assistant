@@ -1,7 +1,7 @@
 import ICAL from "ical.js";
 
 import type { Recurrence } from "../db/schema";
-import { localToUtc } from "../time";
+import { localToUtc, toLocalParts } from "../time";
 
 /** One concrete occurrence of a calendar object, normalized. */
 export type ParsedOccurrence = {
@@ -130,6 +130,11 @@ function escapeText(s: string) {
   return s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
 }
 const utcStamp = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+/** Floating local wall-clock time ("20261116T190000", no Z / TZID). */
+function localStamp(d: Date, tz: string): string {
+  const p = toLocalParts(d, tz);
+  return `${p.year}${pad(p.month)}${pad(p.day)}T${pad(p.hour)}${pad(p.minute)}00`;
+}
 const dateValue = (ymd: string) => ymd.replace(/-/g, "");
 
 /** RFC 5545 line folding at 75 octets. */
@@ -153,22 +158,24 @@ function fold(line: string): string {
   return out.join("\r\n ");
 }
 
-export function rruleOf(r: Recurrence, allDay: boolean, tz: string): string {
+/** UNTIL must match DTSTART's form: DATE for all-day, floating local time for timed. */
+export function rruleOf(r: Recurrence, allDay: boolean): string {
   const parts = [`FREQ=${r.freq.toUpperCase()}`];
   if (r.interval && r.interval > 1) parts.push(`INTERVAL=${r.interval}`);
   if (r.byWeekday?.length) parts.push(`BYDAY=${r.byWeekday.map((d) => BYDAY[d]).join(",")}`);
   if (r.count) parts.push(`COUNT=${r.count}`);
   else if (r.until) {
     // UNTIL is inclusive; end of that local day.
-    parts.push(allDay ? `UNTIL=${dateValue(r.until)}` : `UNTIL=${utcStamp(new Date(localToUtc(r.until, tz).getTime() + 86_399_000))}`);
+    parts.push(allDay ? `UNTIL=${dateValue(r.until)}` : `UNTIL=${dateValue(r.until)}T235959`);
   }
   return `RRULE:${parts.join(";")}`;
 }
 
 /**
- * Serialize a new event. Timed events are written in UTC: Apple shows them
- * in device time, and with a no-DST zone (America/Araguaina) recurrences
- * stay on the same wall-clock time.
+ * Serialize a new event. One-off timed events are written in UTC (an exact
+ * instant). Recurring timed events are written in floating local time, so the
+ * RRULE expands on wall-clock time: a weekly 19:00 class stays at 19:00 across
+ * DST changes in any timezone.
  */
 export function buildIcs(ev: NewEvent, tz: string, now = new Date()): string {
   const lines = [
@@ -184,8 +191,10 @@ export function buildIcs(ev: NewEvent, tz: string, now = new Date()): string {
     `SUMMARY:${escapeText(ev.title)}`,
     ...(ev.allDay
       ? [`DTSTART;VALUE=DATE:${dateValue(ev.startDate!)}`, `DTEND;VALUE=DATE:${dateValue(ev.endDateExclusive!)}`]
-      : [`DTSTART:${utcStamp(ev.start)}`, `DTEND:${utcStamp(ev.end)}`]),
-    ...(ev.recurrence ? [rruleOf(ev.recurrence, ev.allDay, tz)] : []),
+      : ev.recurrence
+        ? [`DTSTART:${localStamp(ev.start, tz)}`, `DTEND:${localStamp(ev.end, tz)}`]
+        : [`DTSTART:${utcStamp(ev.start)}`, `DTEND:${utcStamp(ev.end)}`]),
+    ...(ev.recurrence ? [rruleOf(ev.recurrence, ev.allDay)] : []),
     ...(ev.location ? [`LOCATION:${escapeText(ev.location)}`] : []),
     ...(ev.notes ? [`DESCRIPTION:${escapeText(ev.notes)}`] : []),
     ...(!ev.allDay && ev.reminderMinutes != null
@@ -235,8 +244,24 @@ const icalDate = (ymd: string) => ICAL.Time.fromDateString(ymd);
  * iPhone), keeping every property we don't touch (attendees, URL, Apple
  * extensions, other alarms when reminder is unchanged…).
  */
-export function patchIcs(ics: string, patch: EventPatch): string {
+/**
+ * Timed value for DTSTART/DTEND. Recurring events keep wall-clock semantics:
+ * the existing TZID (iPhone-made events) when known, else floating time.
+ */
+function timedValue(master: ICAL.Component, d: Date, tz: string): { time: ICAL.Time; tzid?: string } {
+  if (!master.hasProperty("rrule")) return { time: icalUtc(d) };
+  const p = toLocalParts(d, tz);
+  const data = { year: p.year, month: p.month, day: p.day, hour: p.hour, minute: p.minute, second: 0, isDate: false };
+  const tzid = master.getFirstProperty("dtstart")?.getParameter("tzid");
+  if (typeof tzid === "string" && ICAL.TimezoneService.has(tzid)) {
+    return { time: ICAL.Time.fromData(data, ICAL.TimezoneService.get(tzid)), tzid };
+  }
+  return { time: ICAL.Time.fromData(data) };
+}
+
+export function patchIcs(ics: string, patch: EventPatch, tz: string): string {
   const root = new ICAL.Component(ICAL.parse(ics));
+  registerTimezones(root);
   const v = root.getAllSubcomponents("vevent").find((x) => !x.hasProperty("recurrence-id"));
   if (!v) throw new Error("no master VEVENT");
 
@@ -254,8 +279,11 @@ export function patchIcs(ics: string, patch: EventPatch): string {
       setTime(v, "dtstart", icalDate(patch.startDate!));
       setTime(v, "dtend", icalDate(patch.endDateExclusive!));
     } else {
-      setTime(v, "dtstart", icalUtc(patch.start!));
-      setTime(v, "dtend", icalUtc(patch.end!));
+      for (const [name, d] of [["dtstart", patch.start!], ["dtend", patch.end!]] as const) {
+        const { time, tzid } = timedValue(v, d, tz);
+        setTime(v, name, time);
+        if (tzid) v.getFirstProperty(name)!.setParameter("tzid", tzid);
+      }
     }
     v.removeAllProperties("duration");
   }

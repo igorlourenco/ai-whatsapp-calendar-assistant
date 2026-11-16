@@ -114,7 +114,7 @@ describe("write", () => {
   });
 
   it("patch keeps Apple-only properties and replaces the alarm", () => {
-    const patched = patchIcs(APPLE_WEEKLY, { title: "Direito Civil", reminderMinutes: 60 });
+    const patched = patchIcs(APPLE_WEEKLY, { title: "Direito Civil", reminderMinutes: 60 }, TZ);
     expect(patched).toContain("X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC");
     expect(patched).toContain("RECURRENCE-ID;TZID=America/Araguaina:20261123T190000");
     const m = parseMaster(patched, TZ)!;
@@ -123,10 +123,10 @@ describe("write", () => {
   });
 
   it("patch moves time (timed) and converts to all-day", () => {
-    const moved = parseMaster(patchIcs(ours, { start: L("2026-11-21T09:00"), end: L("2026-11-21T10:00"), allDay: false }), TZ)!;
+    const moved = parseMaster(patchIcs(ours, { start: L("2026-11-21T09:00"), end: L("2026-11-21T10:00"), allDay: false }, TZ), TZ)!;
     expect(localDateTime(moved.startAt, TZ)).toBe("2026-11-21T09:00");
     const allDay = parseMaster(
-      patchIcs(ours, { allDay: true, startDate: "2026-11-22", endDateExclusive: "2026-11-23", reminderMinutes: null }),
+      patchIcs(ours, { allDay: true, startDate: "2026-11-22", endDateExclusive: "2026-11-23", reminderMinutes: null }, TZ),
       TZ,
     )!;
     expect(allDay).toMatchObject({ allDay: true, reminderMinutes: null });
@@ -137,5 +137,33 @@ describe("write", () => {
     expect(out).not.toContain("RECURRENCE-ID");
     const occ = parseOccurrences(out, ...range("2026-11-16", "2026-12-01"), TZ).map((o) => localDateTime(o.start, TZ));
     expect(occ).toEqual(["2026-11-16T19:00", "2026-11-25T19:00", "2026-11-30T19:00"]);
+  });
+});
+
+describe("DST-safe recurrence (any timezone)", () => {
+  const LIS = "Europe/Lisbon";
+  const l = (s: string) => localToUtc(s, LIS);
+
+  it("weekly class keeps 19:00 wall time across the March DST change", () => {
+    const ics = buildIcs(
+      { uid: "DST-1", title: "Aula", start: l("2027-03-16T19:00"), end: l("2027-03-16T21:00"), allDay: false, recurrence: { freq: "weekly", until: "2027-04-06" } },
+      LIS,
+    );
+    expect(ics).toContain("DTSTART:20270316T190000\r\n"); // floating, no Z
+    expect(ics).toContain("UNTIL=20270406T235959");
+    const occ = parseOccurrences(ics, l("2027-03-01"), l("2027-05-01"), LIS).map((o) => localDateTime(o.start, LIS));
+    expect(occ).toEqual(["2027-03-16T19:00", "2027-03-23T19:00", "2027-03-30T19:00", "2027-04-06T19:00"]);
+  });
+
+  it("one-off events stay exact instants (UTC)", () => {
+    const ics = buildIcs({ uid: "DST-2", title: "Voo", start: l("2027-03-28T10:00"), end: l("2027-03-28T12:00"), allDay: false }, LIS);
+    expect(ics).toMatch(/DTSTART:20270328T\d{6}Z/);
+  });
+
+  it("editing an iPhone event with TZID keeps its TZID (wall-clock semantics)", () => {
+    const out = patchIcs(APPLE_WEEKLY, { start: L("2026-11-16T18:00"), end: L("2026-11-16T21:00"), allDay: false }, TZ);
+    expect(out).toContain("DTSTART;TZID=America/Araguaina:20261116T180000");
+    const occ = parseOccurrences(out, ...range("2026-11-16", "2026-11-26"), TZ).map((o) => localDateTime(o.start, TZ));
+    expect(occ[0]).toBe("2026-11-16T18:00");
   });
 });
