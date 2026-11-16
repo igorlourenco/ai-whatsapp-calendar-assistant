@@ -9,10 +9,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "zapi:webhook": "tsx --env-file=.dev.vars scripts/set-zapi-webhook.ts",
     "cf-typegen": "wrangler types",
     "eval": "tsx --env-file=.dev.vars scripts/eval.ts",
-    "db": "tsx --env-file=.dev.vars scripts/db.ts"
+    "db": "tsx --env-file=.dev.vars scripts/db.ts",
+    "configure": "tsx scripts/setup.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.4",
@@ -29,5 +29,6 @@
     "typescript": "^7.0.2",
     "vitest": "^5.1.0",
     "wrangler": "^4.163.0"
-  }
+  },
+  "packageManager": "pnpm@10.28.2"
 }
