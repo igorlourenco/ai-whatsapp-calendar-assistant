@@ -1,11 +1,12 @@
-import { neon } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-http";
+import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 
 import * as schema from "./schema";
 
-export function getDb(env: { DATABASE_URL: string }) {
-  return drizzle(neon(env.DATABASE_URL), { schema });
-}
+/**
+ * Any Drizzle SQLite database with our schema: the Durable Object's embedded
+ * SQLite in production (sync driver), sql.js in tests and the eval.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type Db = BaseSQLiteDatabase<"sync" | "async", any, typeof schema>;
 
-export type Db = ReturnType<typeof getDb>;
 export { schema };

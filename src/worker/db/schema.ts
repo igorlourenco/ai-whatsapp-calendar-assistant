@@ -1,28 +1,13 @@
-import {
-  boolean,
-  date,
-  index,
-  integer,
-  jsonb,
-  pgTable,
-  primaryKey,
-  text,
-  timestamp,
-  uuid,
-} from "drizzle-orm/pg-core";
+import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
-export const categories = pgTable("categories", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  /** Lowercase, accent-free key the LLM refers to (e.g. "faculdade"). */
-  slug: text("slug").notNull().unique(),
-  name: text("name").notNull(),
-  emoji: text("emoji").notNull(),
-  /** Hex color (mirrors the iCloud calendar color). */
-  color: text("color").notNull().default("#64748b"),
-  /** iCloud calendar collection URL this category maps to (production store). */
-  calendarUrl: text("calendar_url").unique(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+/*
+ * Lives in the Scheduler Durable Object's embedded SQLite (one instance,
+ * single user). Events themselves live in iCloud; this is control state only.
+ * Timestamps are epoch-ms integers; JSON columns are text.
+ */
+
+const now = () => new Date();
+const ts = (name: string) => integer(name, { mode: "timestamp_ms" });
 
 export type Recurrence = {
   freq: "daily" | "weekly" | "monthly" | "yearly";
@@ -36,86 +21,63 @@ export type Recurrence = {
   count?: number;
 };
 
-export const events = pgTable(
-  "events",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    title: text("title").notNull(),
-    notes: text("notes"),
-    location: text("location"),
-    categoryId: uuid("category_id").references(() => categories.id, {
-      onDelete: "set null",
-    }),
-    allDay: boolean("all_day").notNull().default(false),
-    /**
-     * Timed: exact instant. All-day: local midnight of the first day.
-     * end_at is EXCLUSIVE (all-day: local midnight after the last day).
-     */
-    startAt: timestamp("start_at", { withTimezone: true }).notNull(),
-    endAt: timestamp("end_at", { withTimezone: true }).notNull(),
-    recurrence: jsonb("recurrence").$type<Recurrence>(),
-    /** Start of the last possible occurrence; null = forever. Used to prune queries. */
-    recurrenceEndAt: timestamp("recurrence_end_at", { withTimezone: true }),
-    /** Cancelled occurrences, as occurrence start ISO strings. */
-    exdates: jsonb("exdates").$type<string[]>().notNull().default([]),
-    /** Minutes before start to remind; null = no reminder. Ignored for all-day. */
-    reminderMinutes: integer("reminder_minutes"),
-    /** WhatsApp message that created it; makes inbox retries idempotent. */
-    sourceMessageId: text("source_message_id"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    index("events_start_idx").on(t.startAt),
-    index("events_end_idx").on(t.endAt),
-    index("events_source_msg_idx").on(t.sourceMessageId),
-  ],
-);
+/** Category ↔ iCloud calendar, plus the emoji shown on WhatsApp. */
+export const categories = sqliteTable("categories", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  /** Lowercase, accent-free key the model refers to (e.g. "faculdade"). */
+  slug: text("slug").notNull().unique(),
+  name: text("name").notNull(),
+  emoji: text("emoji").notNull(),
+  /** Hex color (mirrors the iCloud calendar color). */
+  color: text("color").notNull().default("#64748b"),
+  /** iCloud calendar collection URL. */
+  calendarUrl: text("calendar_url").unique(),
+  createdAt: ts("created_at").notNull().$defaultFn(now),
+});
 
-export const reminderLog = pgTable(
+/** One row per reminder sent (claimed before sending, released on failure). */
+export const reminderLog = sqliteTable(
   "reminder_log",
   {
-    /** Store event id (iCloud object URL or Postgres uuid). */
+    /** Store event id (iCloud object URL). */
     eventId: text("event_id").notNull(),
-    occurrenceStart: timestamp("occurrence_start", { withTimezone: true }).notNull(),
-    sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+    occurrenceStart: ts("occurrence_start").notNull(),
+    sentAt: ts("sent_at").notNull().$defaultFn(now),
   },
   (t) => [primaryKey({ columns: [t.eventId, t.occurrenceStart] })],
 );
 
-export const digestLog = pgTable(
+export const digestLog = sqliteTable(
   "digest_log",
   {
     kind: text("kind").$type<"morning" | "evening">().notNull(),
-    localDate: date("local_date").notNull(),
-    sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+    /** YYYY-MM-DD in the configured timezone. */
+    localDate: text("local_date").notNull(),
+    sentAt: ts("sent_at").notNull().$defaultFn(now),
   },
   (t) => [primaryKey({ columns: [t.kind, t.localDate] })],
 );
 
 /**
- * Durable inbox. The webhook only inserts here (deduped on Z-API messageId)
- * and wakes the Scheduler DO, which processes rows in order with retries:
- *   pending → (LLM ran, reply stored) answered → (WhatsApp sent) done
+ * Durable inbox. The webhook hands each message to the Durable Object, which
+ * stores it here (deduped on Z-API messageId) and processes rows in order:
+ *   pending → (model ran, reply stored) answered → (WhatsApp sent) done
  *   any step failing MAX_ATTEMPTS times → failed (user is told explicitly)
- * Storing the reply before sending means a send retry never re-runs the LLM.
+ * Storing the reply before sending means a send retry never re-runs the model.
  */
-export const inboundMessages = pgTable(
+export const inboundMessages = sqliteTable(
   "inbound_messages",
   {
     messageId: text("message_id").primaryKey(),
     phone: text("phone").notNull().default(""),
     text: text("text").notNull().default(""),
-    status: text("status")
-      .$type<"pending" | "answered" | "done" | "failed">()
-      .notNull()
-      .default("done"),
+    status: text("status").$type<"pending" | "answered" | "done" | "failed">().notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
     reply: text("reply"),
     lastError: text("last_error"),
-    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
-    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
-    processedAt: timestamp("processed_at", { withTimezone: true }),
+    nextAttemptAt: ts("next_attempt_at").notNull().$defaultFn(now),
+    receivedAt: ts("received_at").notNull().$defaultFn(now),
+    processedAt: ts("processed_at"),
   },
   (t) => [index("inbound_status_idx").on(t.status, t.receivedAt)],
 );
@@ -124,24 +86,22 @@ export const inboundMessages = pgTable(
  * Events created while handling a WhatsApp message. Lets the failure notice
  * say exactly what got saved before something broke.
  */
-export const messageEvents = pgTable(
+export const messageEvents = sqliteTable(
   "message_events",
   {
     messageId: text("message_id").notNull(),
     eventId: text("event_id").notNull(),
     label: text("label").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: ts("created_at").notNull().$defaultFn(now),
   },
   (t) => [primaryKey({ columns: [t.messageId, t.eventId] })],
 );
-
-export type Category = typeof categories.$inferSelect;
-export type EventRow = typeof events.$inferSelect;
 
 /**
  * Structured conversation state (single row, id=1). NOT a chat transcript:
  * the model never sees past replies, only these code-built facts.
  * - draft: an incomplete create waiting for missing fields (e.g. the date)
+ * - pick: a "qual deles?" question waiting for the user's choice
  * - focus: events recently created/changed/listed, exposed to the model as
  *   E1, E2… so "muda pra 16h" / "apaga esse" / "o segundo" resolve.
  */
@@ -158,16 +118,17 @@ export type DraftCreate = {
   reminder_minutes?: number | null;
 };
 export type FocusItem = { eventId: string; occurrenceStart: string; label: string };
-/** "Qual deles?" was asked: the user must pick one focus item for this action. */
 export type PendingPick =
   | { action: "delete"; only_that_day?: boolean | null }
   | { action: "update"; changes: Record<string, unknown> };
 
-export const assistantState = pgTable("assistant_state", {
+export const assistantState = sqliteTable("assistant_state", {
   id: integer("id").primaryKey().default(1),
-  draft: jsonb("draft").$type<DraftCreate | null>(),
-  draftAt: timestamp("draft_at", { withTimezone: true }),
-  pick: jsonb("pick").$type<PendingPick | null>(),
-  focus: jsonb("focus").$type<FocusItem[]>().notNull().default([]),
-  focusAt: timestamp("focus_at", { withTimezone: true }),
+  draft: text("draft", { mode: "json" }).$type<DraftCreate | null>(),
+  pick: text("pick", { mode: "json" }).$type<PendingPick | null>(),
+  draftAt: ts("draft_at"),
+  focus: text("focus", { mode: "json" }).$type<FocusItem[]>().notNull().default([]),
+  focusAt: ts("focus_at"),
 });
+
+export type Category = typeof categories.$inferSelect;

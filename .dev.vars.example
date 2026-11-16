@@ -1,4 +1,3 @@
-DATABASE_URL=postgresql://user:pass@ep-xxx.sa-east-1.aws.neon.tech/neondb?sslmode=require
 DEEPSEEK_API_KEY=sk-...
 # Same Z-API instance as Movisim
 ZAPI_INSTANCE_ID=
@@ -12,3 +11,7 @@ OWNER_PHONE=+55 11 99999 9999
 # appleid.apple.com → Sign-In and Security → App-Specific Passwords
 ICLOUD_USERNAME=you@icloud.com
 ICLOUD_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
+# Bearer token for /debug/* (state, read-only SQL, export/import, restore)
+DEBUG_TOKEN=
+# Deployed worker URL, used by `pnpm db` / `pnpm db:export`
+WORKER_URL=https://ai-assistant-wpp.<you>.workers.dev

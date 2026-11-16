@@ -9,24 +9,22 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio",
-    "db:seed": "tsx --env-file=.dev.vars scripts/seed.ts",
     "zapi:webhook": "tsx --env-file=.dev.vars scripts/set-zapi-webhook.ts",
     "cf-typegen": "wrangler types",
-    "eval": "tsx --env-file=.dev.vars scripts/eval.ts"
+    "eval": "tsx --env-file=.dev.vars scripts/eval.ts",
+    "db": "tsx --env-file=.dev.vars scripts/db.ts"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^1.2.1",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.19",
     "ical.js": "^2.2.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.16",
     "@types/node": "^26.6.6",
+    "@types/sql.js": "^1.4.11",
     "drizzle-kit": "^0.31.11",
+    "sql.js": "^1.16.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0",
