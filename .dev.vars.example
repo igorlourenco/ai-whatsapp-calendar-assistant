@@ -1,0 +1,14 @@
+DATABASE_URL=postgresql://user:pass@ep-xxx.sa-east-1.aws.neon.tech/neondb?sslmode=require
+DEEPSEEK_API_KEY=sk-...
+# Same Z-API instance as Movisim
+ZAPI_INSTANCE_ID=
+ZAPI_TOKEN=
+ZAPI_CLIENT_TOKEN=
+# Random string; appended as ?token= to the received-message webhook URL
+ZAPI_WEBHOOK_TOKEN=
+# Only this number talks to the assistant (E.164)
+OWNER_PHONE=+55 11 99999 9999
+# iCloud (events live in your Apple Calendar). App-specific password:
+# appleid.apple.com → Sign-In and Security → App-Specific Passwords
+ICLOUD_USERNAME=you@icloud.com
+ICLOUD_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx

@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ai-assistant-wpp",
+  "account_id": "4e11c166f9a37026be19ab4f5c194c59",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // Reminders + digests are timed by the Scheduler DO alarm (src/worker/scheduler.ts).
+  // This daily cron is only a watchdog that arms the alarm if none is pending.
+  "triggers": { "crons": ["0 6 * * *"] },
+  "durable_objects": {
+    "bindings": [{ "name": "SCHEDULER", "class_name": "Scheduler" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Scheduler"] }],
+  "vars": {
+    "TIMEZONE": "America/Araguaina",
+    "MORNING_DIGEST_TIME": "07:00",
+    "EVENING_DIGEST_TIME": "21:00",
+    "DEFAULT_REMINDER_MINUTES": "30",
+    "DEEPSEEK_MODEL": "deepseek-chat"
+  }
+  // Secrets (wrangler secret put …): DATABASE_URL, DEEPSEEK_API_KEY,
+  // ZAPI_INSTANCE_ID, ZAPI_TOKEN, ZAPI_CLIENT_TOKEN, ZAPI_WEBHOOK_TOKEN,
+  // OWNER_PHONE, ICLOUD_USERNAME, ICLOUD_APP_PASSWORD
+}
