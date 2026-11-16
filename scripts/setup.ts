@@ -88,6 +88,8 @@ const SETTINGS: [key: keyof typeof DEFAULTS, help: string][] = [
   ["DEFAULT_REMINDER_MINUTES", "Default reminder before timed events (minutes)"],
   ["DEEPSEEK_MODEL", "DeepSeek model"],
   ["VISION_MODEL", "Workers AI model that reads images"],
+  ["TASK_NAG_MINUTES", "Re-send pending tasks every N minutes on their due day"],
+  ["TASK_NAG_UNTIL", "No task nags after this time (HH:mm)"],
 ];
 const SECRET_KEYS = [...REQUIRED.map(([k]) => k), "ZAPI_WEBHOOK_TOKEN", "DEBUG_TOKEN", ...SETTINGS.map(([k]) => k)];
 

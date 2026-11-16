@@ -57,8 +57,8 @@ export class Scheduler extends DurableObject<Env> {
   }
 
   private cfg(): CronConfig {
-    const { morningAt, eveningAt } = settings(this.env);
-    return { morningAt, eveningAt };
+    const { morningAt, eveningAt, taskNagMinutes, taskNagUntil } = settings(this.env);
+    return { morningAt, eveningAt, taskNagMinutes, taskNagUntil };
   }
 
   /** Store a WhatsApp message (idempotent on messageId) and process ASAP. */

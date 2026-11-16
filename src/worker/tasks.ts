@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 
 import { expandOccurrences } from "./calendar/recurrence";
 import { normText } from "./calendar/store";
@@ -85,7 +85,7 @@ export async function findDuplicateTask(db: Db, input: TaskInput): Promise<Task 
   );
 }
 
-export type TaskPatch = { title?: string; dueDate?: string | null; dueTime?: string | null; notes?: string | null };
+export type TaskPatch = { title?: string; dueDate?: string; dueTime?: string | null; notes?: string | null };
 
 export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<Task | null> {
   const cur = await getTask(db, id);
@@ -153,31 +153,59 @@ export async function searchTasks(db: Db, search: string): Promise<Task[]> {
 
 /* -------------------------------- nags ---------------------------------- */
 
-/** When the nag for this task is due (timed open tasks only). */
-export function nagAt(t: Task, tz: string): Date | null {
-  if (t.status !== "open" || !t.dueDate || !t.dueTime || t.remindedAt) return null;
-  return localToUtc(`${t.dueDate}T${t.dueTime}`, tz);
+/*
+ * From its due moment on, a task is re-sent every `every` minutes until it's
+ * marked done (or moved to another day). Due moment = its time, or for a
+ * date-only task one interval after the morning digest (which already lists
+ * it). No nags after `until`; they resume the next morning. Overdue tasks
+ * keep being nagged every day.
+ */
+export type NagCfg = { morningAt: string; every: number; until: string };
+
+const plusMinutes = (hhmm: string, m: number) => {
+  const [h, mm] = hhmm.split(":").map(Number) as [number, number];
+  const t = Math.min(h * 60 + mm + m, 23 * 60 + 59);
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+};
+
+/** [start, end) of the nag window for `t` on local `day`. */
+function nagWindow(t: Task, day: string, cfg: NagCfg, tz: string): [Date, Date] {
+  const first = day === t.dueDate && t.dueTime ? t.dueTime : plusMinutes(cfg.morningAt, cfg.every);
+  const start = localToUtc(`${day}T${first}`, tz);
+  // A task due after `until` still gets nagged once, at its time.
+  const end = first >= cfg.until ? new Date(start.getTime() + 1) : localToUtc(`${day}T${cfg.until}`, tz);
+  return [start, end];
 }
 
-export async function pendingNags(db: Db): Promise<Task[]> {
-  return db
-    .select()
-    .from(tasks)
-    .where(and(eq(tasks.status, "open"), isNull(tasks.remindedAt)));
+/** When this task should be nagged next (≤ now means "now"); null if never. */
+export function nextNagAt(t: Task, cfg: NagCfg, tz: string, now: Date): Date | null {
+  if (t.status !== "open" || !t.dueDate) return null;
+  const today = localDate(now, tz);
+  let day = t.dueDate > today ? t.dueDate : today;
+  for (let i = 0; i < 3; i++, day = addDays(day, 1)) {
+    const [start, end] = nagWindow(t, day, cfg, tz);
+    const after = t.remindedAt ? new Date(t.remindedAt.getTime() + cfg.every * 60_000) : start;
+    const at = after > start ? after : start;
+    if (at < end) return at;
+  }
+  return null;
 }
 
-/** Claim a nag (so overlapping runs never double-send). */
-export async function claimNag(db: Db, id: string): Promise<boolean> {
-  const res = await db
-    .update(tasks)
-    .set({ remindedAt: new Date() })
-    .where(and(eq(tasks.id, id), isNull(tasks.remindedAt)))
-    .returning({ id: tasks.id });
-  return res.length > 0;
+/** Inside its nag window right now (so it rides along in the current nag). */
+export function inNagPhase(t: Task, cfg: NagCfg, tz: string, now: Date): boolean {
+  if (t.status !== "open" || !t.dueDate) return false;
+  const today = localDate(now, tz);
+  if (t.dueDate > today) return false;
+  const [start, end] = nagWindow(t, today, cfg, tz);
+  return start <= now && now < end;
 }
 
-export async function releaseNag(db: Db, id: string): Promise<void> {
-  await db.update(tasks).set({ remindedAt: null }).where(eq(tasks.id, id));
+/** Mark these tasks as nagged at `at`; returns the previous values (to undo on send failure). */
+export async function markNagged(db: Db, list: Task[], at: Date): Promise<() => Promise<void>> {
+  for (const t of list) await db.update(tasks).set({ remindedAt: at }).where(eq(tasks.id, t.id));
+  return async () => {
+    for (const t of list) await db.update(tasks).set({ remindedAt: t.remindedAt }).where(eq(tasks.id, t.id));
+  };
 }
 
 /* ------------------------------ formatting ------------------------------ */

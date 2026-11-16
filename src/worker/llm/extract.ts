@@ -89,8 +89,6 @@ export const actionSchema = z.discriminatedUnion("type", [
       title: opt(z.string().min(1)),
       due_date: opt(ymd),
       due_time: opt(hhmm),
-      /** "tira a data" → true. */
-      clear_due: opt(z.boolean()),
       notes: opt(z.string()),
     }),
   }),
@@ -104,7 +102,13 @@ export type Action = z.infer<typeof actionSchema>;
 
 function contextBlock(state: State): string {
   const parts: string[] = [];
-  if (state.draft) {
+  if (state.draft?.kind === "task") {
+    const { kind: _, start_time, ...d } = state.draft;
+    parts.push(`Tarefa incompleta aguardando a data:
+${JSON.stringify({ ...d, due_time: start_time ?? null })}
+→ Se a mensagem atual traz a data (ex: "hoje", "sexta", "amanhã 10h", "dia 20"), gere UM "create_task" com os campos acima + due_date (e due_time se disser hora).
+→ Se a mensagem atual é outro pedido, ignore o rascunho.`);
+  } else if (state.draft) {
     parts.push(`Pedido incompleto aguardando dados (falta: data):
 ${JSON.stringify(state.draft)}
 → Se a mensagem atual traz o que falta (ex: "sexta 15h", "dia 20"), gere UM "create" com os campos acima + os novos.
@@ -205,11 +209,12 @@ TAREFAS (to-dos) são diferentes de compromissos:
 - "me lembra X min/h antes" de um evento citado continua sendo update do evento (reminder_minutes), não tarefa.
 
 7. Criar tarefa: {"type":"create_task","title":"Pagar boleto","due_date":"YYYY-MM-DD"|null,"due_time":"HH:mm"|null,"recurrence":null,"notes":null}
-- Sem data → due_date null (tarefa sem prazo; NÃO pergunte). Hora só se disser ("às 10h") — nessa hora o usuário recebe um aviso.
+- Sem data → due_date null (o sistema pergunta "pra quando?"). Nunca invente data. Hora só se disser ("às 10h") — a partir dela o usuário é cobrado.
 - Repete ("todo dia 5", "toda segunda") → recurrence como nos compromissos, due_date = próxima ocorrência.
 - title curto, verbo no infinitivo, primeira letra maiúscula, sem data/hora ("Ligar pro banco").
 8. Concluir tarefa ("feito", "paguei o boleto", "fiz a 2"): {"type":"complete_task","ref":"T1"|null,"search":"palavra-chave"|null}
-9. Alterar tarefa ("adia o boleto pra segunda", "muda a tarefa do banco pra 15h"): {"type":"update_task","ref":"T1"|null,"search":null,"changes":{"title":null,"due_date":null,"due_time":null,"clear_due":null,"notes":null}}
+- "feito todas", "fiz tudo" → um complete_task para CADA T da lista de tarefas citadas. "feito 1 e 3" → T1 e T3.
+9. Alterar tarefa ("adia o boleto pra segunda", "muda a tarefa do banco pra 15h"): {"type":"update_task","ref":"T1"|null,"search":null,"changes":{"title":null,"due_date":null,"due_time":null,"notes":null}}
 10. Apagar tarefa ("apaga a tarefa do banco", "esquece o boleto"): {"type":"delete_task","ref":null,"search":"banco"}
 11. Ver tarefas ("tarefas", "o que tenho pra fazer", "minhas pendências", "lista de tarefas"): {"type":"list_tasks"}
 - "o que tenho hoje/amanhã" continua sendo query (o sistema já junta as tarefas do período).

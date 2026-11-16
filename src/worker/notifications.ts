@@ -5,8 +5,8 @@ import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "./db/client";
 
 import { digestLog, reminderLog } from "./db/schema";
-import { loadState, pushTasks, saveState } from "./llm/state";
-import { claimNag, nagAt, pendingNags, releaseNag, taskSection, tasksDue, toTaskRef } from "./tasks";
+import { loadState, saveState } from "./llm/state";
+import { inNagPhase, markNagged, nextNagAt, openTasks, taskLine, taskSection, tasksDue, toTaskRef, type NagCfg } from "./tasks";
 import { addDays, hhmmToMinutes, humanDatePt, localDate, localToUtc, toLocalParts } from "./time";
 
 type Send = (message: string) => Promise<void>;
@@ -14,7 +14,13 @@ type Send = (message: string) => Promise<void>;
 /** What notifications need: the event store + Neon (for send claims). */
 export type Ctx = { store: CalendarStore; db: Db; tz: string };
 
-export type CronConfig = { morningAt: string; eveningAt: string };
+export type CronConfig = { morningAt: string; eveningAt: string; taskNagMinutes?: number; taskNagUntil?: string };
+
+const nagCfg = (cfg: CronConfig): NagCfg => ({
+  morningAt: cfg.morningAt,
+  every: cfg.taskNagMinutes ?? 30,
+  until: cfg.taskNagUntil ?? "22:00",
+});
 
 /** Window after the target time in which a missed digest is still sent. */
 const DIGEST_GRACE_MIN = 120;
@@ -28,41 +34,42 @@ export async function runDue(ctx: Ctx, cfg: CronConfig, send: Send, now = new Da
   const results = await Promise.allSettled([
     sendReminders(ctx, send, now),
     sendDigests(ctx, cfg, send, now),
-    sendTaskNags(ctx, send, now),
+    sendTaskNags(ctx, nagCfg(cfg), send, now),
   ]);
   const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason);
   if (failed.length) throw new AggregateError(failed, "notifications failed");
 }
 
 /**
- * Timed tasks: one WhatsApp nag at the due time. The nagged task becomes T1,
- * so a bare "feito" / "adia pra amanhã" right after it resolves.
+ * Pending tasks: whenever one is due for a nag, ONE message lists every task
+ * currently in its nag window (numbered = T1…, so "feito 2" resolves), and
+ * all of them restart their interval together. Repeats until done.
  */
-async function sendTaskNags(ctx: Ctx, send: Send, now: Date) {
-  const failures: unknown[] = [];
-  const nagged = [];
-  for (const t of await pendingNags(ctx.db)) {
-    const at = nagAt(t, ctx.tz);
-    if (!at || at > now) continue;
-    if (!(await claimNag(ctx.db, t.id))) continue;
-    const late = now.getTime() - at.getTime() > 30 * 60_000;
-    const when = late ? ` (era pra ${localDate(at, ctx.tz) === localDate(now, ctx.tz) ? "" : `${humanDatePt(t.dueDate!)} `}${t.dueTime})` : "";
-    try {
-      await send(`⏰ *Tarefa:* ${t.title}${when}\n_Responda *feito* ou *adia pra …*_`);
-      nagged.push(t);
-    } catch (err) {
-      failures.push(err);
-      await releaseNag(ctx.db, t.id);
-    }
+async function sendTaskNags(ctx: Ctx, cfg: NagCfg, send: Send, now: Date) {
+  const open = await openTasks(ctx.db);
+  const due = open.filter((t) => {
+    const at = nextNagAt(t, cfg, ctx.tz, now);
+    return at && at <= now;
+  });
+  if (!due.length) return;
+  const list = open.filter((t) => due.includes(t) || inNagPhase(t, cfg, ctx.tz, now));
+  const today = localDate(now, ctx.tz);
+
+  const undo = await markNagged(ctx.db, list, now);
+  const msg =
+    list.length === 1
+      ? `⏰ *Tarefa pendente:* ${taskLine(list[0]!, today)}\n_Já fez? Responda *feito* (ou *adia pra …*)_`
+      : `⏰ *Tarefas pendentes* (${list.length})\n${list.map((t, i) => `${i + 1}. ${taskLine(t, today)}`).join("\n")}\n_Responda *feito 1*, *feito todas* ou *adia o 2 pra amanhã*_`;
+  try {
+    await send(msg);
+  } catch (err) {
+    await undo();
+    throw err;
   }
-  if (nagged.length) {
-    const today = localDate(now, ctx.tz);
-    const state = await loadState(ctx.db, now);
-    state.tasks = pushTasks(state.tasks ?? [], nagged.map((t) => toTaskRef(t, today)));
-    state.lastList = "tasks";
-    await saveState(ctx.db, state, now);
-  }
-  if (failures.length) throw new AggregateError(failures, "task nag failed");
+  const state = await loadState(ctx.db, now);
+  state.tasks = list.map((t) => toTaskRef(t, today));
+  state.lastList = "tasks";
+  await saveState(ctx.db, state, now);
 }
 
 /**
@@ -87,8 +94,8 @@ export async function nextWakeUp(ctx: Ctx, cfg: CronConfig, now = new Date()): P
   ]);
   const sentKeys = new Set(sent.map((r) => `${r.eventId}:${r.occurrenceStart.getTime()}`));
 
-  for (const t of await pendingNags(ctx.db)) {
-    const at = nagAt(t, ctx.tz);
+  for (const t of await openTasks(ctx.db)) {
+    const at = nextNagAt(t, nagCfg(cfg), ctx.tz, now);
     if (!at) continue;
     if (at <= now) return now;
     if (at < next) next = at;

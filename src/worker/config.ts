@@ -9,6 +9,10 @@ export type Settings = {
   eveningAt: string;
   defaultReminder: number;
   visionModel: string;
+  /** Pending tasks are re-sent every N minutes on/after their due date. */
+  taskNagMinutes: number;
+  /** No task nags after this local time (they resume at the morning digest). */
+  taskNagUntil: string;
 };
 
 export const DEFAULTS = {
@@ -19,6 +23,8 @@ export const DEFAULTS = {
   DEEPSEEK_MODEL: "deepseek-flash",
   /** Workers AI model that transcribes images (picked by an eval, see README). */
   VISION_MODEL: "@cf/mistralai/mistral-small-3.1-24b-instruct",
+  TASK_NAG_MINUTES: "30",
+  TASK_NAG_UNTIL: "22:00",
 } as const;
 
 type SettingsEnv = Partial<Record<keyof typeof DEFAULTS, string>>;
@@ -44,5 +50,7 @@ export function settings(env: SettingsEnv): Settings {
     eveningAt: hhmm(env.EVENING_DIGEST_TIME, DEFAULTS.EVENING_DIGEST_TIME),
     defaultReminder: Number.isFinite(reminder) && reminder >= 0 ? reminder : Number(DEFAULTS.DEFAULT_REMINDER_MINUTES),
     visionModel: env.VISION_MODEL || DEFAULTS.VISION_MODEL,
+    taskNagMinutes: Number(env.TASK_NAG_MINUTES) >= 5 ? Number(env.TASK_NAG_MINUTES) : Number(DEFAULTS.TASK_NAG_MINUTES),
+    taskNagUntil: hhmm(env.TASK_NAG_UNTIL, DEFAULTS.TASK_NAG_UNTIL),
   };
 }

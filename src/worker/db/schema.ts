@@ -113,6 +113,8 @@ export const messageEvents = sqliteTable(
  *   E1, E2… so "muda pra 16h" / "apaga esse" / "o segundo" resolve.
  */
 export type DraftCreate = {
+  /** "task": a create_task waiting for its due date. Default: an event. */
+  kind?: "task";
   title: string;
   date?: string | null;
   start_time?: string | null;

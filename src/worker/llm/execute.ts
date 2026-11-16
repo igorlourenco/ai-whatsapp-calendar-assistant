@@ -42,6 +42,8 @@ export type AppCtx = {
   db: Db;
   tz: string;
   defaultReminder: number;
+  /** Minutes between task nags (shown in confirmations). */
+  taskNagMinutes?: number;
   /** WhatsApp message being handled; makes creates idempotent on retry. */
   sourceMessageId?: string | null;
 };
@@ -348,6 +350,17 @@ async function run(ctx: AppCtx, a: Action, turn: Turn): Promise<string | null> {
       return null;
     }
     case "create_task": {
+      if (!a.due_date) {
+        // Every task needs a day (that's when the nagging starts): ask.
+        turn.next.draft = {
+          kind: "task",
+          title: a.title,
+          start_time: a.due_time ?? null,
+          recurrence: cleanRecurrence(a.recurrence),
+          notes: a.notes ?? null,
+        };
+        return `❓ *${a.title}*: pra quando? (ex: _hoje_, _sexta_, _amanhã 10h_)`;
+      }
       const input = {
         title: a.title,
         dueDate: a.due_date ?? null,
@@ -387,7 +400,6 @@ async function run(ctx: AppCtx, a: Action, turn: Turn): Promise<string | null> {
       const patch: TaskPatch = {};
       if (changes.title) patch.title = changes.title;
       if (changes.notes) patch.notes = changes.notes;
-      if (changes.clear_due) patch.dueDate = null;
       if (changes.due_date) patch.dueDate = changes.due_date;
       if (changes.due_time) {
         patch.dueTime = changes.due_time;
