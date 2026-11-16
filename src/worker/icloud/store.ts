@@ -228,7 +228,8 @@ export function icloudStore(env: ICloudEnv, db: Db, tz: string, defaultReminder:
         const newUid = crypto.randomUUID().toUpperCase();
         const newHref = `${targetCat.calendarUrl}${newUid}.ics`;
         await putObject(env, newHref, withUid(ics, newUid));
-        await deleteObject(env, id, cur.obj.etag || undefined);
+        // The copy holds the patched content; the original just has to go.
+        await deleteObject(env, id);
         const moved = await read(newHref);
         return moved ? toEvent(newHref, moved.master) : null;
       }
@@ -240,7 +241,14 @@ export function icloudStore(env: ICloudEnv, db: Db, tz: string, defaultReminder:
         const fresh = await read(id);
         if (!fresh) return null;
         ics = patchIcs(fresh.obj.ics, p, tz);
-        await putObject(env, id, ics, fresh.obj.etag || undefined);
+        try {
+          await putObject(env, id, ics, fresh.obj.etag || undefined);
+        } catch (err2) {
+          if (!String(err2).includes("412")) throw err2;
+          // Patch is applied on content just read: overwrite without If-Match.
+          console.warn("[icloud] put 412 twice, writing unconditionally", String(err2));
+          await putObject(env, id, ics, null);
+        }
       }
       const saved = await read(id);
       return saved ? toEvent(id, saved.master) : null;
@@ -251,10 +259,26 @@ export function icloudStore(env: ICloudEnv, db: Db, tz: string, defaultReminder:
       if (!cur) return "not_found";
       if (occurrenceStart && cur.master.recurrence) {
         const ics = excludeOccurrence(cur.obj.ics, new Date(occurrenceStart), tz);
-        await putObject(env, id, ics, cur.obj.etag || undefined);
+        try {
+          await putObject(env, id, ics, cur.obj.etag || undefined);
+        } catch (err) {
+          if (!String(err).includes("412")) throw err;
+          console.warn("[icloud] exdate 412, re-reading", String(err));
+          const fresh = await read(id);
+          if (!fresh) return "not_found";
+          await putObject(env, id, excludeOccurrence(fresh.obj.ics, new Date(occurrenceStart), tz), null);
+        }
         return "occurrence_cancelled";
       }
-      await deleteObject(env, id, cur.obj.etag || undefined);
+      try {
+        await deleteObject(env, id, cur.obj.etag || undefined);
+      } catch (err) {
+        if (!String(err).includes("412")) throw err;
+        // Changed in between (or an ETag we can't match): the user asked for
+        // it gone either way, so delete what's there now.
+        console.warn("[icloud] delete 412, retrying unconditionally", String(err));
+        await deleteObject(env, id);
+      }
       return "deleted";
     },
   };

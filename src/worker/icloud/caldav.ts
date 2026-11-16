@@ -94,6 +94,13 @@ export async function listCalendars(env: ICloudEnv, home: string): Promise<Remot
 
 /* ------------------------------- objects -------------------------------- */
 
+/**
+ * If-Match needs the strong ETag. Responses that pass through Cloudflare can
+ * come back with it weakened (W/"…") after transparent decompression, which
+ * iCloud then rejects with 412 on every conditional DELETE/PUT.
+ */
+const strongEtag = (e: string | null | undefined) => (e ?? "").trim().replace(/^W\//i, "");
+
 const caldavUtc = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
 
 /** All event objects with an occurrence overlapping [from, to) (recurring ones included whole). */
@@ -115,7 +122,7 @@ export async function queryEvents(env: ICloudEnv, calendarUrl: string, from: Dat
     if (!href || !data) continue;
     out.push({
       href: new URL(href, calendarUrl).href,
-      etag: unescapeXml(first(resp, "getetag") ?? ""),
+      etag: strongEtag(unescapeXml(first(resp, "getetag") ?? "")),
       ics: unescapeXml(data),
     });
   }
@@ -123,37 +130,38 @@ export async function queryEvents(env: ICloudEnv, calendarUrl: string, from: Dat
 }
 
 export async function getObject(env: ICloudEnv, href: string): Promise<RemoteObject | null> {
-  const res = await dav(env, "GET", href);
+  const res = await dav(env, "GET", href, { headers: { "Accept-Encoding": "identity" } });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`iCloud GET ${res.status}`);
-  return { href, etag: res.headers.get("ETag") ?? "", ics: await res.text() };
+  return { href, etag: strongEtag(res.headers.get("ETag")), ics: await res.text() };
 }
 
 /**
- * Create (ifMatch undefined → If-None-Match: *) or update (If-Match: etag).
+ * Create (ifMatch undefined → If-None-Match: *), update (If-Match: etag) or
+ * overwrite (ifMatch null → no precondition).
  * Returns the new ETag. Throws on 412 (changed on iPhone meanwhile).
  */
 export async function putObject(
   env: ICloudEnv,
   href: string,
   ics: string,
-  ifMatch?: string,
+  ifMatch?: string | null,
 ): Promise<string> {
+  const precondition: Record<string, string> =
+    ifMatch === null ? {} : ifMatch ? { "If-Match": ifMatch } : { "If-None-Match": "*" };
   const res = await dav(env, "PUT", href, {
     body: ics,
-    headers: {
-      "Content-Type": "text/calendar; charset=utf-8",
-      ...(ifMatch ? { "If-Match": ifMatch } : { "If-None-Match": "*" }),
-    },
+    headers: { "Content-Type": "text/calendar; charset=utf-8", ...precondition },
   });
   if (res.status === 412) throw new Error("iCloud: event changed meanwhile (412)");
   if (!res.ok) throw new Error(`iCloud PUT ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  return res.headers.get("ETag") ?? "";
+  return strongEtag(res.headers.get("ETag"));
 }
 
 export async function deleteObject(env: ICloudEnv, href: string, ifMatch?: string): Promise<void> {
   const res = await dav(env, "DELETE", href, { headers: ifMatch ? { "If-Match": ifMatch } : {} });
   if (res.status === 404) return;
+  if (res.status === 412) throw new Error(`iCloud: event changed meanwhile (412) If-Match=${ifMatch}`);
   if (!res.ok) throw new Error(`iCloud DELETE ${res.status}`);
 }
 
