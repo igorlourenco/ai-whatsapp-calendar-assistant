@@ -1,7 +1,6 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 
-import { getDb } from "./db/client";
-import { inboundMessages } from "./db/schema";
+import type { ExportData } from "./debug";
 import { scheduler } from "./scheduler";
 import { samePhone, type ZapiReceived } from "./zapi";
 
@@ -22,23 +21,71 @@ app.post("/webhooks/zapi", async (c) => {
   // owner gets the assistant; everyone else is left for the human inbox.
   if (!samePhone(body.phone, env.OWNER_PHONE)) return c.json({ ok: true, ignored: "sender" });
 
-  // Durable inbox: store, wake the Scheduler DO, ack. The DO does the LLM
-  // work with retries, so a slow model or an iCloud/Neon/Z-API blip never
-  // loses a message. If storing or waking fails we return 500 so Z-API
-  // redelivers (the insert is idempotent on messageId).
-  const messageId = body.messageId ?? `noid:${body.phone}:${body.momment ?? Date.now()}`;
-  const text = body.text?.message ?? body.image?.caption ?? "";
+  // Durable inbox: the Durable Object stores the message (idempotent on
+  // messageId) before we ack, then processes it with retries. If that fails
+  // we return 500 so Z-API redelivers.
   try {
-    await getDb(env)
-      .insert(inboundMessages)
-      .values({ messageId, phone: body.phone, text, status: "pending" })
-      .onConflictDoNothing();
-    await scheduler(env).kick();
+    await scheduler(env).enqueue({
+      messageId: body.messageId ?? `noid:${body.phone}:${body.momment ?? Date.now()}`,
+      phone: body.phone,
+      text: body.text?.message ?? body.image?.caption ?? "",
+    });
   } catch (err) {
     console.error("[webhook] enqueue failed", err);
     return c.json({ ok: false }, 500);
   }
   return c.json({ ok: true });
+});
+
+/* ------------------------------- Debug --------------------------------- */
+// Inspection/ops for the Durable Object's SQLite. Bearer DEBUG_TOKEN.
+
+async function timingSafeEqual(a: string, b: string) {
+  const enc = new TextEncoder();
+  const [ha, hb] = await Promise.all([crypto.subtle.digest("SHA-256", enc.encode(a)), crypto.subtle.digest("SHA-256", enc.encode(b))]);
+  // Workers-specific extension of SubtleCrypto (not in the DOM lib types).
+  return (crypto.subtle as unknown as { timingSafeEqual(a: ArrayBuffer, b: ArrayBuffer): boolean }).timingSafeEqual(ha, hb);
+}
+
+app.use("/debug/*", async (c, next) => {
+  const token = c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+  if (!c.env.DEBUG_TOKEN || !(await timingSafeEqual(token, c.env.DEBUG_TOKEN))) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await next();
+});
+
+const fail = (c: Context, err: unknown) => c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+
+app.get("/debug/state", async (c) => c.json(await scheduler(c.env).debugSnapshot()));
+
+app.post("/debug/query", async (c) => {
+  const { sql } = await c.req.json<{ sql: string }>();
+  try {
+    return c.json(await scheduler(c.env).debugQuery(sql));
+  } catch (err) {
+    return fail(c, err);
+  }
+});
+
+app.get("/debug/export", async (c) => c.json(await scheduler(c.env).debugExport()));
+
+app.post("/debug/import", async (c) => {
+  try {
+    return c.json(await scheduler(c.env).debugImport(await c.req.json<ExportData>()));
+  } catch (err) {
+    return fail(c, err);
+  }
+});
+
+app.post("/debug/restore", async (c) => {
+  const { at, confirm } = await c.req.json<{ at: string; confirm?: string }>();
+  if (confirm !== "restore") return c.json({ error: 'send {"at": "<ISO time>", "confirm": "restore"}' }, 400);
+  try {
+    return c.json({ ok: true, ...(await scheduler(c.env).debugRestore(at)) });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
 });
 
 app.all("*", (c) => c.text("not found", 404));

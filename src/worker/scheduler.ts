@@ -1,8 +1,14 @@
 import { DurableObject } from "cloudflare:workers";
 import { asc, inArray } from "drizzle-orm";
+import { drizzle, type DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
+import { migrate } from "drizzle-orm/durable-sqlite/migrator";
 
+import migrations from "../../drizzle/migrations.js";
 import { makeCtx } from "./context";
+import type { Db } from "./db/client";
+import * as schema from "./db/schema";
 import { inboundMessages } from "./db/schema";
+import { exportAll, importAll, readOnlyQuery, snapshot, type ExportData } from "./debug";
 import { OPEN_STATUSES, processInbox } from "./inbox";
 import { handleMessage, type AppCtx } from "./llm/execute";
 import { nextWakeUp, runDue, type CronConfig } from "./notifications";
@@ -14,32 +20,50 @@ const MIN_SLEEP_MS = 1_000;
 /** Retry delay when reminders/digests failed to send. */
 const DUE_RETRY_MS = 60_000;
 
+export type Inbound = { messageId: string; phone: string; text: string };
+
 /**
- * Single-instance Durable Object that owns everything time-based:
+ * Single-instance Durable Object that owns all state and everything
+ * time-based. Its embedded SQLite (migrated on startup) holds the inbox,
+ * conversation state and send logs; events live in iCloud.
  *
- * 1. Inbox: the webhook stores each WhatsApp message in `inbound_messages`
- *    and calls kick(). Messages are processed strictly in arrival order with
- *    retries + backoff. No 30s waitUntil cap, no silent loss: after
- *    MAX_ATTEMPTS the user gets an explicit failure notice.
- * 2. Notifications: reminders + digests, via one alarm set to the next due
- *    time, so Neon is only touched when there's work.
+ * 1. Inbox: enqueue() stores each WhatsApp message durably and wakes the
+ *    alarm. Messages are processed strictly in arrival order with retries +
+ *    backoff; after MAX_ATTEMPTS the user gets an explicit failure notice.
+ * 2. Notifications: reminders + digests via one alarm set to the next due time.
  *
- * Being one instance also serializes all writes (no races between messages).
+ * Being one instance serializes all writes (no races between messages).
+ *
+ * ⚠️ The data lives inside this class. Never rename or delete `Scheduler` in a
+ * wrangler migration without exporting first (GET /debug/export).
  */
 export class Scheduler extends DurableObject<Env> {
-  /** Set by kick(); survives an in-flight alarm overwriting the alarm time. */
+  private readonly db: DrizzleSqliteDODatabase<typeof schema>;
+  /** Set by enqueue(); survives an in-flight alarm overwriting the alarm time. */
   private kicked = false;
 
-  private toolCtx(): AppCtx {
-    return makeCtx(this.env);
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env);
+    this.db = drizzle(state.storage, { schema });
+    void state.blockConcurrencyWhile(async () => {
+      await migrate(this.db, migrations);
+    });
+  }
+
+  private appCtx(): AppCtx {
+    return makeCtx(this.env, this.db as unknown as Db);
   }
 
   private cfg(): CronConfig {
     return { morningAt: this.env.MORNING_DIGEST_TIME, eveningAt: this.env.EVENING_DIGEST_TIME };
   }
 
-  /** New inbound message stored: process ASAP. */
-  async kick(): Promise<void> {
+  /** Store a WhatsApp message (idempotent on messageId) and process ASAP. */
+  async enqueue(m: Inbound): Promise<void> {
+    await this.db
+      .insert(inboundMessages)
+      .values({ messageId: m.messageId, phone: m.phone, text: m.text, status: "pending" })
+      .onConflictDoNothing();
     this.kicked = true;
     await this.ctx.storage.setAlarm(Date.now());
   }
@@ -47,11 +71,10 @@ export class Scheduler extends DurableObject<Env> {
   /** Recompute the next wake-up and arm the alarm. Returns it (ISO) for logging. */
   async reschedule(opts: { retryAt?: number } = {}): Promise<string> {
     const now = Date.now();
-    const ctx = this.toolCtx();
-    let at = (await nextWakeUp(ctx, this.cfg(), new Date(now))).getTime();
+    let at = (await nextWakeUp(this.appCtx(), this.cfg(), new Date(now))).getTime();
     if (opts.retryAt) at = Math.min(at, opts.retryAt);
 
-    const [open] = await ctx.db
+    const [open] = await this.db
       .select({ next: inboundMessages.nextAttemptAt })
       .from(inboundMessages)
       .where(inArray(inboundMessages.status, [...OPEN_STATUSES]))
@@ -65,7 +88,7 @@ export class Scheduler extends DurableObject<Env> {
     return new Date(at).toISOString();
   }
 
-  /** Watchdog: arm only if no alarm is pending (no DB hit otherwise). */
+  /** Watchdog: arm only if no alarm is pending. */
   async ensureArmed(): Promise<string> {
     const pending = await this.ctx.storage.getAlarm();
     return pending ? new Date(pending).toISOString() : this.reschedule();
@@ -73,7 +96,7 @@ export class Scheduler extends DurableObject<Env> {
 
   async alarm(): Promise<void> {
     this.kicked = false;
-    const ctx = this.toolCtx();
+    const ctx = this.appCtx();
     let retryAt: number | undefined;
 
     try {
@@ -93,6 +116,45 @@ export class Scheduler extends DurableObject<Env> {
       retryAt = Date.now() + DUE_RETRY_MS;
     }
     await this.reschedule({ retryAt });
+  }
+
+  /* ----------------------- debug / ops (token-guarded) ---------------------- */
+
+  async debugSnapshot() {
+    const alarm = await this.ctx.storage.getAlarm();
+    return { ...(await snapshot(this.db as unknown as Db)), nextAlarm: alarm ? new Date(alarm).toISOString() : null };
+  }
+
+  /** Ad-hoc SQL, read-only: runs in a transaction that is always rolled back. */
+  debugQuery(sql: string) {
+    return readOnlyQuery(this.ctx.storage, sql);
+  }
+
+  async debugExport(): Promise<ExportData> {
+    return exportAll(this.db as unknown as Db);
+  }
+
+  /** Insert-only import (never overwrites or deletes). Used for backups and the Neon move. */
+  async debugImport(data: ExportData) {
+    const result = await importAll(this.db as unknown as Db, data);
+    // Best-effort: the import itself is done; a failing iCloud read must not
+    // turn it into an error (the next alarm/watchdog re-arms anyway).
+    const nextAlarm = await this.reschedule().catch((err) => `not rescheduled: ${err}`);
+    return { ...result, nextAlarm };
+  }
+
+  /**
+   * Point-in-time recovery (up to 30 days back): the object restarts with its
+   * storage as it was at `at`. Everything after that moment is discarded.
+   */
+  async debugRestore(at: string) {
+    const when = new Date(at);
+    if (Number.isNaN(when.getTime())) throw new Error("invalid time");
+    const bookmark = await this.ctx.storage.getBookmarkForTime(when);
+    await this.ctx.storage.onNextSessionRestoreBookmark(bookmark);
+    // Restart after replying, so the caller sees success or a real error.
+    setTimeout(() => this.ctx.abort("restoring point-in-time bookmark"), 50);
+    return { restoredTo: when.toISOString(), bookmark };
   }
 }
 
