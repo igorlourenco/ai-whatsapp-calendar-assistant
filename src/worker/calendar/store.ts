@@ -2,7 +2,7 @@ import type { Recurrence } from "../db/schema";
 import { addDays, localToUtc } from "../time";
 
 /*
- * Storage boundary. Production: iCloud (CalDAV). Tests/eval: Postgres.
+ * Storage boundary. Production: iCloud (CalDAV). Tests/eval: in-memory store.
  * Everything above this layer (executor, digests, reminders) only sees these
  * types, so it behaves identically on both.
  */
@@ -16,7 +16,7 @@ export type StoreCategory = {
 };
 
 export type StoreEvent = {
-  /** Opaque id: iCloud object URL, or Postgres uuid. */
+  /** Opaque id: iCloud object URL (in-memory store: uuid). */
   id: string;
   title: string;
   allDay: boolean;

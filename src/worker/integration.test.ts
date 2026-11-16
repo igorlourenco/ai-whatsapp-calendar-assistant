@@ -1,35 +1,26 @@
-import { readFileSync, readdirSync } from "node:fs";
-
-import { PGlite } from "@electric-sql/pglite";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/pglite";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { pgStore } from "./calendar/service";
-import type { Db } from "./db/client";
+import { memoryStore } from "./calendar/memory-store";
 import * as schema from "./db/schema";
 import { processInbox } from "./inbox";
 import { HELP_TEXT, executeActions, handleMessage, type AppCtx } from "./llm/execute";
 import { buildPrompt, extractActions, type Action } from "./llm/extract";
 import { loadState, saveState, type State } from "./llm/state";
 import { nextWakeUp, runDue } from "./notifications";
+import { memoryDb } from "./testing/sqlite";
 import { localDateTime, localToUtc } from "./time";
 
 const TZ = "America/Araguaina";
+const store = memoryStore(TZ, 30, [
+  { slug: "faculdade", name: "Faculdade", emoji: "🎓" },
+  { slug: "trabalho", name: "Trabalho", emoji: "💼" },
+  { slug: "pessoal", name: "Pessoal", emoji: "🏠" },
+]);
 let ctx: AppCtx;
 
 beforeAll(async () => {
-  const pg = new PGlite();
-  for (const f of readdirSync("drizzle").filter((f) => f.endsWith(".sql")).sort()) {
-    for (const stmt of readFileSync(`drizzle/${f}`, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
-  }
-  const db = drizzle(pg, { schema }) as unknown as Db;
-  ctx = { store: pgStore(db, TZ, 30), db, tz: TZ, defaultReminder: 30 };
-  await db.insert(schema.categories).values([
-    { slug: "faculdade", name: "Faculdade", emoji: "🎓" },
-    { slug: "trabalho", name: "Trabalho", emoji: "💼" },
-    { slug: "pessoal", name: "Pessoal", emoji: "🏠" },
-  ]);
+  ctx = { store, db: await memoryDb(), tz: TZ, defaultReminder: 30 };
 });
 
 const exec = async (actions: Action[], sourceMessageId?: string) =>
@@ -40,7 +31,7 @@ const create = (a: Partial<Extract<Action, { type: "create" }>>): Action => ({
   date: "2026-12-01",
   ...a,
 });
-const byTitle = (title: string) => ctx.db.select().from(schema.events).where(eq(schema.events.title, title));
+const byTitle = async (title: string) => store.all().filter((r) => r.title === title);
 
 describe("executor (code builds every reply from the DB)", () => {
   it("create timed → confirmation rendered from the saved row", async () => {
@@ -101,10 +92,9 @@ describe("executor (code builds every reply from the DB)", () => {
     );
   });
 
-  it("unknown category never blocks the save", async () => {
+  it("unknown category never blocks the save (falls back to Pessoal, like iCloud)", async () => {
     const r = await exec([create({ title: "Yoga", start_time: "07:00", category: "academia" })]);
-    expect(r).toContain("✅ *Salvo na agenda*");
-    expect(r).toContain("🏷️ sem categoria");
+    expect(r).toMatch(/^✅ \*Salvo na agenda\*\n🏠 \*Yoga\*/);
   });
 
   it("invalid input → ❌ and nothing saved", async () => {
@@ -119,8 +109,8 @@ describe("executor (code builds every reply from the DB)", () => {
       { type: "query", from: "2026-12-03", to: "2026-12-03" },
     ]);
     const [confirm, agenda] = r.split("\n\n");
-    expect(confirm).toMatch(/^✅ \*Salvo na agenda\*\n📌 \*Almoço João\*/);
-    expect(agenda).toBe("🗓️ *Quinta, 3 de dezembro*\n📌 *12:30–13:30* Almoço João");
+    expect(confirm).toMatch(/^✅ \*Salvo na agenda\*\n🏠 \*Almoço João\*/);
+    expect(agenda).toBe("🗓️ *Quinta, 3 de dezembro*\n🏠 *12:30–13:30* Almoço João");
   });
 
   it("create never duplicates: same message retried, or same event sent again", async () => {
@@ -153,7 +143,7 @@ describe("structured context (draft + focus), never a transcript", () => {
 
     // The model sees the draft and emits a full create
     const r = await step([create({ title: "Oftalmo", date: "2026-12-11", start_time: "15:00" })]);
-    expect(r).toMatch(/^✅ \*Salvo na agenda\*\n📌 \*Oftalmo\*\n🗓️ sexta, 11 de dezembro · 15:00–16:00/);
+    expect(r).toMatch(/^✅ \*Salvo na agenda\*\n🏠 \*Oftalmo\*\n🗓️ sexta, 11 de dezembro · 15:00–16:00/);
     expect(state.draft).toBeNull();
     expect(state.focus[0]!.label).toBe("Oftalmo — sexta 11/12 15:00");
   });
@@ -168,7 +158,7 @@ describe("structured context (draft + focus), never a transcript", () => {
   it("'muda pra 16h' via ref E1 updates the focused event", async () => {
     await step([create({ title: "Barbeiro", date: "2026-12-12", start_time: "10:00" })]);
     const r = await step([{ type: "update", ref: "E1", changes: { start_time: "16:00" } }]);
-    expect(r).toContain("✏️ *Atualizado*\n📌 *Barbeiro*\n🗓️ sábado, 12 de dezembro · 16:00–17:00");
+    expect(r).toContain("✏️ *Atualizado*\n🏠 *Barbeiro*\n🗓️ sábado, 12 de dezembro · 16:00–17:00");
   });
 
   it("model re-creating a focus event does not duplicate", async () => {

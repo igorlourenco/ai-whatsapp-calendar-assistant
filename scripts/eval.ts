@@ -1,6 +1,6 @@
 /**
  * End-to-end eval against the REAL DeepSeek model, on a throwaway in-memory
- * Postgres (PGlite). Never touches Neon or WhatsApp.
+ * store + SQLite (sql.js). Never touches iCloud or WhatsApp.
  *
  *   pnpm eval            # 3 rounds
  *   pnpm eval 5          # 5 rounds
@@ -8,15 +8,10 @@
  * Each round replays the messages in order on one database (updates/deletes
  * depend on earlier creates) and checks the database after every message.
  */
-import { readFileSync, readdirSync } from "node:fs";
 
-import { PGlite } from "@electric-sql/pglite";
-import { drizzle } from "drizzle-orm/pglite";
-
-import type { Db } from "../src/worker/db/client";
-import { pgStore } from "../src/worker/calendar/service";
-import * as schema from "../src/worker/db/schema";
+import { memoryStore } from "../src/worker/calendar/memory-store";
 import { handleMessage, type AppCtx } from "../src/worker/llm/execute";
+import { memoryDb } from "../src/worker/testing/sqlite";
 import { addDays, localDate, localDateTime, weekdayOf } from "../src/worker/time";
 
 const TZ = "America/Araguaina";
@@ -36,7 +31,7 @@ const dayN = (n: number) => {
 };
 const yearOf = (mmdd: string) => (`${today.slice(0, 4)}-${mmdd}` >= today ? today.slice(0, 4) : String(Number(today.slice(0, 4)) + 1));
 
-type Ev = typeof schema.events.$inferSelect;
+type Ev = ReturnType<ReturnType<typeof memoryStore>["all"]>[number];
 type Expect =
   | { kind: "create"; start: string; allDay: boolean; lastDay?: string; weekly?: number[]; category?: string }
   | { kind: "update"; titleLike: RegExp; start?: string; reminder?: number }
@@ -76,26 +71,21 @@ const CASES: { msg: string; expect: Expect }[] = [
   { msg: "cancela a academia", expect: { kind: "delete", titleLike: /academia/i } },
 ];
 
-async function freshCtx(): Promise<AppCtx> {
-  const pg = new PGlite();
-  for (const f of readdirSync("drizzle").filter((f) => f.endsWith(".sql")).sort()) {
-    for (const stmt of readFileSync(`drizzle/${f}`, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
-  }
-  const db = drizzle(pg, { schema }) as unknown as Db;
-  await db.insert(schema.categories).values([
+type Store = ReturnType<typeof memoryStore>;
+
+async function freshCtx(): Promise<AppCtx & { store: Store }> {
+  const store = memoryStore(TZ, 30, [
     { slug: "faculdade", name: "Faculdade", emoji: "🎓" },
     { slug: "trabalho", name: "Trabalho", emoji: "💼" },
     { slug: "pessoal", name: "Pessoal", emoji: "🏠" },
   ]);
-  return { store: pgStore(db, TZ, 30), db, tz: TZ, defaultReminder: 30 };
+  return { store, db: await memoryDb(), tz: TZ, defaultReminder: 30 };
 }
 
-async function snapshot(ctx: AppCtx): Promise<Map<string, Ev & { cat: string | null }>> {
-  const rows = await ctx.db
-    .select({ e: schema.events, c: schema.categories })
-    .from(schema.events)
-    .leftJoin(schema.categories, (await import("drizzle-orm")).eq(schema.events.categoryId, schema.categories.id));
-  return new Map(rows.map((r) => [r.e.id, { ...r.e, cat: r.c?.slug ?? null }]));
+async function snapshot(ctx: AppCtx & { store: Store }): Promise<Map<string, Ev & { cat: string | null }>> {
+  const cats = new Map((await ctx.store.listCategories()).map((c) => [c.id, c.slug]));
+  // Copies, so later mutations don't leak into "before".
+  return new Map(ctx.store.all().map((r) => [r.id, { ...structuredClone(r), cat: cats.get(r.categoryId ?? "") ?? null }]));
 }
 
 function check(exp: Expect, before: Map<string, any>, after: Map<string, any>, reply: string): string | null {
@@ -160,7 +150,7 @@ async function round(r: number): Promise<Outcome[]> {
       fail = `threw: ${err instanceof Error ? err.message : err}`;
     }
     const after = await snapshot(ctx);
-    const changed = after.size !== before.size || [...after.values()].some((e) => before.get(e.id)?.updatedAt?.getTime() !== e.updatedAt.getTime());
+    const changed = after.size !== before.size || [...after.values()].some((e) => JSON.stringify(before.get(e.id)) !== JSON.stringify(e));
     // The one unacceptable outcome: reply says it wrote, database says it didn't.
     const falseClaim = /^(✅|✏️|🗑️)/.test(reply) && !changed;
     out.push({ round: r, i, msg: c.msg, fail, reply, falseClaim });

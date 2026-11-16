@@ -2,15 +2,10 @@
  * Live CalDAV round-trip on TEMPORARY calendars (deleted at the end).
  *   pnpm tsx --env-file=.dev.vars scripts/icloud-smoke.ts
  */
-import { readFileSync, readdirSync } from "node:fs";
-
-import { PGlite } from "@electric-sql/pglite";
-import { drizzle } from "drizzle-orm/pglite";
-
-import type { Db } from "../src/worker/db/client";
 import * as schema from "../src/worker/db/schema";
 import { calendarHome, createCalendar, deleteObject, getObject, listCalendars } from "../src/worker/icloud/caldav";
 import { icloudStore } from "../src/worker/icloud/store";
+import { memoryDb } from "../src/worker/testing/sqlite";
 import { localDateTime, localToUtc } from "../src/worker/time";
 
 const TZ = "America/Araguaina";
@@ -22,10 +17,7 @@ const check = (name: string, ok: boolean, info = "") => {
   if (!ok) failed++;
 };
 
-const pg = new PGlite();
-for (const f of readdirSync("drizzle").filter((f) => f.endsWith(".sql")).sort())
-  for (const stmt of readFileSync(`drizzle/${f}`, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
-const db = drizzle(pg, { schema }) as unknown as Db;
+const db = await memoryDb();
 
 const home = await calendarHome(env);
 const tag = Date.now().toString(36);
