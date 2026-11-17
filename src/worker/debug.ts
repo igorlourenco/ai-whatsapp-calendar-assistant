@@ -8,6 +8,7 @@ import {
   inboundMessages,
   messageEvents,
   reminderLog,
+  shoppingItems,
   tasks,
 } from "./db/schema";
 
@@ -25,6 +26,7 @@ const TABLES = {
   digest_log: digestLog,
   message_events: messageEvents,
   tasks,
+  shopping_items: shoppingItems,
 } as const;
 
 /** Timestamp columns per table (JSON carries them as ISO strings). */
@@ -36,6 +38,7 @@ const DATE_COLS: Record<keyof typeof TABLES, string[]> = {
   digest_log: ["sentAt"],
   message_events: ["createdAt"],
   tasks: ["remindedAt", "createdAt", "doneAt"],
+  shopping_items: ["createdAt", "boughtAt"],
 };
 
 export type ExportData = { exportedAt: string; tables: Partial<Record<keyof typeof TABLES, Record<string, unknown>[]>> };
@@ -50,6 +53,7 @@ export async function snapshot(db: Db) {
     digests: await db.select().from(digestLog).orderBy(desc(digestLog.sentAt)).limit(10),
     categories: await db.select().from(categories),
     openTasks: await db.select().from(tasks).where(eq(tasks.status, "open")),
+    shopping: await db.select().from(shoppingItems).where(eq(shoppingItems.status, "open")),
   };
 }
 

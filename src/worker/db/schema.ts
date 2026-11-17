@@ -189,3 +189,23 @@ export const tasks = sqliteTable(
 export type Task = typeof tasks.$inferSelect;
 
 export type Category = typeof categories.$inferSelect;
+
+/**
+ * Shopping list ("compra leite e ovos", "comprei o leite"). One list, no
+ * dates, no nags: a dated purchase is a task instead. Bought items are kept
+ * (status "bought") so the history survives; the list shows open ones only.
+ */
+export const shoppingItems = sqliteTable(
+  "shopping_items",
+  {
+    /** `<messageId>:<normalized name>` when created from a message (idempotent retries). */
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    status: text("status").$type<"open" | "bought">().notNull().default("open"),
+    createdAt: ts("created_at").notNull().$defaultFn(now),
+    boughtAt: ts("bought_at"),
+  },
+  (t) => [index("shopping_status_idx").on(t.status, t.createdAt)],
+);
+
+export type ShoppingItem = typeof shoppingItems.$inferSelect;
