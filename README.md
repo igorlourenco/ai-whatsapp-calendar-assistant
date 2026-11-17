@@ -31,6 +31,7 @@ bot:  🗓️ Terça, 17 de novembro
 - **Your Apple Calendar is the source of truth.** Events are read and written directly in iCloud over CalDAV, so they show up on your iPhone, Mac and Watch. Events you create on the iPhone show up in queries and digests too.
 - **Categories = iCloud calendars** (e.g. Work 💼, School 🎓, Personal 🏠), each with an emoji and a description the AI uses to pick one.
 - **Tasks (to-dos) that nag until done.** "me lembra de pagar o boleto sexta", "ligar pro banco amanhã 10h", "pagar aluguel todo dia 5". Every task has a day (no date → "pra quando?"). From its time (or 30 min after the morning digest, for date-only tasks) you get a WhatsApp message every 30 min listing what's still pending, until you answer `feito`. Overdue tasks keep nagging the next days; nothing is sent after 22:00. `tarefas` lists them, `feito 2` / `feito todas` / `paguei o boleto` checks off (a repeating one moves to its next date), `adia o banco pra sexta` reschedules.
+- **Shopping list.** "compra leite, ovos e pão", "acabou o café" → one list, no dates, no nags. `lista` shows it, `comprei o leite` / `comprei tudo` checks off, `tira o café da lista` removes. A purchase with a date ("comprar presente da Ana até sexta") or "me lembra de…" stays a task.
 - **Photos and screenshots.** Send an exam schedule, an event flyer, a chat screenshot or a photo of a note: the bot reads it and replies with a numbered preview (`📷 Encontrei 4 eventos… Salvo? sim / não / 1,3`). Nothing from an image is saved until you confirm.
 - **Follow-ups without a chat log.** "marca oftalmo" → "❓ qual dia?" → "dia 10 às 15h". "muda pra 16h" / "apaga esse" right after saving. "Achei 2… qual?" → "o 2".
 - **Daily digests** (morning agenda + tasks, evening preview) and **event reminders** both as native iPhone alerts and WhatsApp messages.
@@ -52,7 +53,7 @@ WhatsApp ─▶ Z-API ─▶ POST /webhooks/zapi?token=…  (only OWNER_PHONE is
              └─ one alarm: next reminder / digest / pending message
                          │
                          ▼
-          iCloud CalDAV (events)  +  DO SQLite (tasks, inbox, state, send logs, category map)
+          iCloud CalDAV (events)  +  DO SQLite (tasks, shopping list, inbox, state, send logs, category map)
 ```
 
 Everything runs on **one Cloudflare Worker** with one Durable Object. No database to provision.
@@ -98,6 +99,7 @@ Re-run it anytime: it's idempotent. Use `pnpm configure --dry-run` to only valid
 - `marca oftalmo` → *qual dia?* → `dia 10 às 15h`
 - `cria categoria academia 🏋️` (creates a new iCloud calendar)
 - `me lembra de ligar pro banco amanhã 10h` · `comprar ração hoje` · `pagar aluguel todo dia 5`
+- `compra leite e ovos` · `lista` · `comprei o leite` · `comprei tudo` · `tira o café da lista`
 - `tarefas` → `feito o 2` · `feito todas` · `paguei o boleto` · `adia o banco pra sexta` · `esquece a ração`
 - 📷 a photo of a schedule → preview → `sim`, `não`, `1,3` or `todos menos 2`
 
@@ -163,6 +165,7 @@ Map of the code:
 | `src/worker/llm/vision.ts`, `batch.ts` | Image transcription; preview and rule-based "sim / não / 1,3" parsing |
 | `src/worker/icloud/` | CalDAV client, iCalendar read/write (ical.js), iCloud store |
 | `src/worker/tasks.ts` | To-dos: storage, repeat, nags, formatting |
+| `src/worker/shopping.ts` | Shopping list: storage, item matching, formatting |
 | `src/worker/notifications.ts` | Event reminders, task nags and digests (deduped, released on send failure) |
 | `src/worker/calendar/` | Store interface, in-memory store for tests, recurrence, formatting |
 
