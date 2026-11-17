@@ -1,7 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 
 import { expandOccurrences } from "./calendar/recurrence";
-import { normText } from "./calendar/store";
+import { matchTitles, normText } from "./calendar/store";
 import type { Db } from "./db/client";
 import { tasks, type Recurrence, type Task, type TaskRef } from "./db/schema";
 import { addDays, diffDays, localDate, localToUtc, shortDatePt, weekdayOf } from "./time";
@@ -143,12 +143,11 @@ export function nextDue(after: string, r: Recurrence, tz: string): string | null
   return localDate(first.start, tz);
 }
 
-/** Search open tasks: every word must be in the title. */
+const TASK_STOP = new Set(["a", "o", "as", "os", "de", "da", "do", "das", "dos", "com", "e", "na", "no", "pra", "para", "minha", "meu", "tarefa"]);
+
+/** Search open tasks: every word in the title (or, failing that, its root). */
 export async function searchTasks(db: Db, search: string): Promise<Task[]> {
-  const STOP = new Set(["a", "o", "as", "os", "de", "da", "do", "das", "dos", "com", "e", "na", "no", "pra", "para", "minha", "meu", "tarefa"]);
-  const words = normText(search).split(/\W+/u).filter((w) => w && !STOP.has(w));
-  if (!words.length) return [];
-  return (await openTasks(db)).filter((t) => words.every((w) => normText(t.title).includes(w)));
+  return matchTitles(await openTasks(db), (t) => t.title, search, TASK_STOP);
 }
 
 /* -------------------------------- nags ---------------------------------- */

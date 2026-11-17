@@ -117,3 +117,28 @@ export const sortOccurrences = (a: OccurrenceView, b: OccurrenceView) =>
 
 export const normText = (s: string) =>
   s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
+
+const commonPrefix = (a: string, b: string) => {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
+};
+
+/** Same root: "doar" ~ "doação", "pagar" ~ "pagamento", "ligar" ~ "ligação". */
+const sameRoot = (a: string, b: string) =>
+  a.length >= 4 && b.length >= 4 && commonPrefix(a, b) >= Math.max(3, Math.min(a.length, b.length) - 2);
+
+/**
+ * Items whose title contains every search word. If none does, falls back to
+ * word roots, so "doar sangue" still finds "Doação de sangue".
+ */
+export function matchTitles<T>(items: T[], title: (t: T) => string, search: string, stopwords: Set<string>): T[] {
+  const words = normText(search).split(/\W+/u).filter((w) => w && !stopwords.has(w));
+  if (!words.length) return [];
+  const strict = items.filter((t) => words.every((w) => normText(title(t)).includes(w)));
+  if (strict.length) return strict;
+  return items.filter((t) => {
+    const tw = normText(title(t)).split(/\W+/u);
+    return words.every((w) => tw.some((x) => x.includes(w) || sameRoot(w, x)));
+  });
+}
