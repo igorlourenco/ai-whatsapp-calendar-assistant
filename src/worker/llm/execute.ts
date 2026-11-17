@@ -29,6 +29,7 @@ import {
   type TaskPatch,
 } from "../tasks";
 import type { Task, TaskRef } from "../db/schema";
+import { addItems, findItem, formatShoppingList, joinNames, markBought, openItems, removeItems } from "../shopping";
 import { addDays, diffDays, localDate, localDateTime, localTime, localToUtc, shortDatePt } from "../time";
 import { renderConfirmations } from "./confirm";
 import type { DeepSeekEnv } from "./deepseek";
@@ -64,7 +65,8 @@ export const HELP_TEXT = `🤔 Não entendi. Exemplos:
 • _muda o dentista pra 16h_
 • _cancela a academia de segunda_
 • _me lembra de pagar o boleto sexta_
-• _tarefas_ · _feito o 2_`;
+• _tarefas_ · _feito o 2_
+• _compra leite e ovos_ · _lista_ · _comprei o leite_`;
 
 export type Incoming = { text: string; mediaUrl?: string | null; mediaMime?: string | null };
 export type MediaDeps = {
@@ -460,6 +462,44 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
       }
       return formatTaskList(list, today);
     }
+    case "add_shopping": {
+      const { added, existing } = await addItems(ctx.db, a.items, ctx.sourceMessageId);
+      const total = (await openItems(ctx.db)).length;
+      const lines: string[] = [];
+      if (added.length) lines.push(`🛒 *Na lista:* ${joinNames(added)}`);
+      if (existing.length) lines.push(`ℹ️ Já estava na lista: ${joinNames(existing)}`);
+      lines.push(`_${total} ${total === 1 ? "item" : "itens"} na lista · manda *lista* pra ver_`);
+      return lines.join("\n");
+    }
+    case "bought":
+    case "remove_shopping": {
+      const open = await openItems(ctx.db);
+      if (!open.length) return "🛒 A lista de compras já está vazia.";
+      const all = a.type === "bought" && (a.all || !a.items?.length);
+      const chosen = all ? open : [];
+      const missing: string[] = [];
+      const ambiguous: string[] = [];
+      for (const name of all ? [] : (a.items ?? [])) {
+        const hits = findItem(open, name);
+        if (hits.length === 1) {
+          if (!chosen.includes(hits[0]!)) chosen.push(hits[0]!);
+        } else if (hits.length) ambiguous.push(`❓ “${name}” bate com ${joinNames(hits)}. Qual? (manda o nome inteiro)`);
+        else missing.push(`“${name}”`);
+      }
+      const ids = chosen.map((i) => i.id);
+      if (a.type === "bought") await markBought(ctx.db, ids);
+      else await removeItems(ctx.db, ids);
+      const left = await openItems(ctx.db);
+      if (left.some((i) => ids.includes(i.id))) throw new Error("write verification failed: shopping items still open");
+      const lines: string[] = [];
+      if (chosen.length) lines.push(a.type === "bought" ? `✅ *Comprado:* ${joinNames(chosen)}` : `🗑️ *Tirado da lista:* ${joinNames(chosen)}`);
+      if (missing.length) lines.push(`❓ Não achei ${missing.join(", ")} na lista.`);
+      lines.push(...ambiguous);
+      if (chosen.length) lines.push(left.length ? `🛒 Falta: ${joinNames(left)}` : "🛒 Lista zerada ✨");
+      return lines.join("\n");
+    }
+    case "list_shopping":
+      return formatShoppingList(await openItems(ctx.db));
     case "unknown":
       return HELP_TEXT;
   }
@@ -668,12 +708,27 @@ async function searchEvents(ctx: AppCtx, search: string, onDate?: string | null)
  * nothing of the kind asked but does find the other kind, act on that one.
  */
 async function crossKind(ctx: AppCtx, a: Action): Promise<Action | null> {
+  // "comprei o presente" said as a purchase but it's a task, not a list item.
+  if (a.type === "bought" && !a.all && a.items?.length === 1) {
+    const name = a.items[0]!;
+    if (findItem(await openItems(ctx.db), name).length || !(await searchTasks(ctx.db, name)).length) return null;
+    return { type: "complete_task", ref: null, search: name };
+  }
   if (!("search" in a) || !a.search || ("ref" in a && a.ref)) return null;
   const search = a.search;
   switch (a.type) {
+    case "complete_task": {
+      // "comprei leite" read as a task, but it's on the shopping list.
+      if ((await searchTasks(ctx.db, search)).length || !findItem(await openItems(ctx.db), search).length) return null;
+      return { type: "bought", items: [search], all: false };
+    }
     case "update_task":
     case "delete_task": {
-      if ((await searchTasks(ctx.db, search)).length || !(await searchEvents(ctx, search)).length) return null;
+      if ((await searchTasks(ctx.db, search)).length) return null;
+      if (a.type === "delete_task" && findItem(await openItems(ctx.db), search).length) {
+        return { type: "remove_shopping", items: [search] };
+      }
+      if (!(await searchEvents(ctx, search)).length) return null;
       if (a.type === "delete_task") return { type: "delete", ref: null, search, on_date: null, only_that_day: null };
       const c = a.changes;
       return {

@@ -94,6 +94,10 @@ export const actionSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("delete_task"), ref: opt(z.string()), search: opt(z.string()) }),
   z.object({ type: z.literal("list_tasks") }),
+  z.object({ type: z.literal("add_shopping"), items: z.array(z.string().min(1)).min(1) }),
+  z.object({ type: z.literal("bought"), items: opt(z.array(z.string().min(1))), all: opt(z.boolean()) }),
+  z.object({ type: z.literal("remove_shopping"), items: z.array(z.string().min(1)).min(1) }),
+  z.object({ type: z.literal("list_shopping") }),
   z.object({ type: z.literal("unknown") }),
 ]);
 
@@ -207,7 +211,7 @@ Formato: {"actions": [ ... ]} com um ou mais itens:
 
 TAREFAS (to-dos) são diferentes de compromissos:
 - Compromisso (create) = algo com hora/lugar marcado em que você ESTÁ: consulta, aula, prova, reunião, viagem, jantar, aniversário, evento.
-- Tarefa (create_task) = algo que você precisa FAZER/RESOLVER: pagar, comprar, ligar, mandar, enviar, entregar, responder, renovar, levar, buscar, resolver. Também tudo que começa com "me lembra de …", "lembrar de …", "não esquecer de …", "tarefa: …", "to-do".
+- Tarefa (create_task) = algo que você precisa FAZER/RESOLVER: pagar, comprar (com data/hora), ligar, mandar, enviar, entregar, responder, renovar, levar, buscar, resolver. Também tudo que começa com "me lembra de …", "lembrar de …", "não esquecer de …", "tarefa: …", "to-do".
 - "me lembra X min/h antes" de um evento citado continua sendo update do evento (reminder_minutes), não tarefa.
 
 7. Criar tarefa: {"type":"create_task","title":"Pagar boleto","due_date":"YYYY-MM-DD"|null,"due_time":"HH:mm"|null,"recurrence":null,"notes":null}
@@ -221,7 +225,16 @@ TAREFAS (to-dos) são diferentes de compromissos:
 11. Ver tarefas ("tarefas", "o que tenho pra fazer", "minhas pendências", "lista de tarefas"): {"type":"list_tasks"}
 - "o que tenho hoje/amanhã" continua sendo query (o sistema já junta as tarefas do período).
 
-12. Qualquer outra coisa (cumprimento, pergunta fora de agenda, mensagem incompreensível): {"type":"unknown"}
+LISTA DE COMPRAS (uma lista só, sem datas):
+13. Pôr na lista: coisas a comprar SEM data/hora ("compra leite", "preciso comprar ovos e pão", "põe arroz na lista", "acabou o café", "anota: sabão, detergente") → {"type":"add_shopping","items":["Leite","Ovos","Pão"]}
+- Um item por produto, nome curto como o usuário disse (quantidade junto se disser: "2kg de arroz"), primeira letra maiúscula, sem o verbo "comprar".
+- Compra COM data ou hora ("comprar presente da Ana até sexta", "comprar ração amanhã") ou com "me lembra de" é TAREFA (create_task), não lista.
+14. Comprou ("comprei leite", "peguei o pão e os ovos", "já comprei o café") → {"type":"bought","items":["leite","pão"],"all":false}. "comprei tudo", "comprei a lista toda" → {"type":"bought","items":[],"all":true}.
+- Se for o nome de uma tarefa citada (T…), é complete_task.
+15. Tirar sem comprar ("tira o leite da lista", "não precisa mais de ovos") → {"type":"remove_shopping","items":["leite"]}
+16. Ver ("lista", "lista de compras", "o que tenho que comprar?", "o que falta comprar") → {"type":"list_shopping"}. "lista de tarefas" continua list_tasks.
+
+17. Qualquer outra coisa (cumprimento, pergunta fora de agenda, mensagem incompreensível): {"type":"unknown"}
 
 Uma mensagem com vários pedidos gera várias ações, na ordem.
 
