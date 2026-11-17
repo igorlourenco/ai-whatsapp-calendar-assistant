@@ -1,6 +1,7 @@
 import { formatAgenda, formatLine } from "../calendar/format";
 import {
   UserError,
+  matchTitles,
   normText,
   slugify,
   type CalendarStore,
@@ -107,11 +108,37 @@ export async function handleMessage(
     if (!items.length) state.batch = null; // unusable batch: drop it, handle the message normally
   }
 
-  const actions = await extractActions(env, text, { now: new Date(), tz: ctx.tz, categories, state });
-  console.log("[extract]", JSON.stringify(actions));
-  const result = await executeActions(ctx, actions, state);
+  const extracted = await extractActions(env, text, { now: new Date(), tz: ctx.tz, categories, state });
+  console.log("[extract]", JSON.stringify(extracted));
+  const { actions, blocked } = guardDeletes(text, extracted, state);
+  const result = actions.length
+    ? await executeActions(ctx, actions, state)
+    : { reply: "", state: { ...state, draft: null, pick: null } };
   await saveState(ctx.db, result.state);
-  return result.state.batch ? `${result.reply}\n\n${BATCH_REMINDER}` : result.reply;
+  const reply = [...blocked, result.reply].filter(Boolean).join("\n\n");
+  return result.state.batch ? `${reply}\n\n${BATCH_REMINDER}` : reply;
+}
+
+const DELETE_WORDS = /\b(cancel|apag|desmarc|remov|retir|tira|exclu|delet|esquec|desist|nao vou mais|nao tem mais|nao precis)/u;
+
+/**
+ * Deleting is the one action that can't be undone, and the model sometimes
+ * reads a correction ("não, era a doação de sangue") as "cancel". Without an
+ * explicit delete word in the message (or a pending "which one to delete?"),
+ * a delete is dropped and explained.
+ */
+export function guardDeletes(text: string, actions: Action[], state?: State): { actions: Action[]; blocked: string[] } {
+  // Answering "qual deles?" for a delete asked in the previous message.
+  const answeringDelete = state?.pick?.action === "delete" || state?.pick?.action === "delete_task";
+  if (answeringDelete || DELETE_WORDS.test(normText(text))) return { actions, blocked: [] };
+  const blocked: string[] = [];
+  const kept = actions.filter((a) => {
+    if (a.type !== "delete" && a.type !== "delete_task") return true;
+    const what = a.search ? `“${a.search}”` : a.type === "delete" ? "esse evento" : "essa tarefa";
+    blocked.push(`❓ Não entendi se é pra apagar ${what}. Nada foi apagado. Se for, manda _cancela ${a.search ?? "…"}_.`);
+    return false;
+  });
+  return { actions: kept, blocked };
 }
 
 /**
@@ -267,7 +294,8 @@ export async function executeActions(
 }
 
 /** Returns text to show, or null when the result is a write (confirmed later from DB). */
-async function run(ctx: AppCtx, a: Action, turn: Turn): Promise<string | null> {
+async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | null> {
+  const a = (await crossKind(ctx, action)) ?? action;
   switch (a.type) {
     case "create": {
       if (!a.date) {
@@ -609,8 +637,64 @@ function updatePatch(ctx: AppCtx, ev: OccurrenceView["event"], c: Changes): Part
   return patch;
 }
 
-const norm = normText;
 const STOPWORDS = new Set(["a", "o", "as", "os", "de", "da", "do", "das", "dos", "com", "e", "na", "no", "pra", "para", "minha", "meu"]);
+
+/** Events whose title matches the search, one occurrence each (next upcoming, else latest past). */
+async function searchEvents(ctx: AppCtx, search: string, onDate?: string | null): Promise<OccurrenceView[]> {
+  const today = localDate(new Date(), ctx.tz);
+  const from = onDate ?? addDays(today, -60);
+  const to = onDate ? addDays(onDate, 1) : addDays(today, 400);
+  const occ = matchTitles(
+    await ctx.store.findOccurrences(localToUtc(from, ctx.tz), localToUtc(to, ctx.tz)),
+    (o) => o.event.title,
+    search,
+    STOPWORDS,
+  );
+  const nowMs = Date.now();
+  const byEvent = new Map<string, OccurrenceView>();
+  for (const o of occ) {
+    const cur = byEvent.get(o.event.id);
+    const upcoming = o.end.getTime() > nowMs;
+    if (!cur || (upcoming && cur.end.getTime() <= nowMs) || (!upcoming && cur.end.getTime() <= nowMs && o.start > cur.start)) {
+      byEvent.set(o.event.id, o);
+    }
+  }
+  return [...byEvent.values()];
+}
+
+/**
+ * The model sometimes picks the wrong kind ("muda a doação de sangue" →
+ * update_task because a task mentions "doação"). When a named search finds
+ * nothing of the kind asked but does find the other kind, act on that one.
+ */
+async function crossKind(ctx: AppCtx, a: Action): Promise<Action | null> {
+  if (!("search" in a) || !a.search || ("ref" in a && a.ref)) return null;
+  const search = a.search;
+  switch (a.type) {
+    case "update_task":
+    case "delete_task": {
+      if ((await searchTasks(ctx.db, search)).length || !(await searchEvents(ctx, search)).length) return null;
+      if (a.type === "delete_task") return { type: "delete", ref: null, search, on_date: null, only_that_day: null };
+      const c = a.changes;
+      return {
+        type: "update",
+        ref: null,
+        search,
+        on_date: null,
+        changes: { title: c.title, date: c.due_date, start_time: c.due_time, notes: c.notes },
+      };
+    }
+    case "update":
+    case "delete": {
+      if ((await searchEvents(ctx, search, a.on_date)).length || !(await searchTasks(ctx.db, search)).length) return null;
+      if (a.type === "delete") return { type: "delete_task", ref: null, search };
+      const c = a.changes;
+      return { type: "update_task", ref: null, search, changes: { title: c.title, due_date: c.date, due_time: c.start_time, notes: c.notes } };
+    }
+    default:
+      return null;
+  }
+}
 
 /**
  * Find the single event the user means. Deterministic: all search words must
@@ -624,25 +708,7 @@ async function resolveTarget(
   turn: Turn,
   pick: PendingPick,
 ): Promise<OccurrenceView | { reply: string }> {
-  const today = localDate(new Date(), ctx.tz);
-  const from = onDate ?? addDays(today, -60);
-  const to = onDate ? addDays(onDate, 1) : addDays(today, 400);
-  const words = norm(search).split(/\W+/u).filter((w) => w && !STOPWORDS.has(w));
-  const occ = (await ctx.store.findOccurrences(localToUtc(from, ctx.tz), localToUtc(to, ctx.tz))).filter((o) =>
-    words.every((w) => norm(o.event.title).includes(w)),
-  );
-
-  // One occurrence per event: the next upcoming one, else the latest past one.
-  const nowMs = Date.now();
-  const byEvent = new Map<string, OccurrenceView>();
-  for (const o of occ) {
-    const cur = byEvent.get(o.event.id);
-    const upcoming = o.end.getTime() > nowMs;
-    if (!cur || (upcoming && cur.end.getTime() <= nowMs) || (!upcoming && cur.end.getTime() <= nowMs && o.start > cur.start)) {
-      byEvent.set(o.event.id, o);
-    }
-  }
-  const matches = [...byEvent.values()];
+  const matches = await searchEvents(ctx, search, onDate);
   const where = onDate ? ` em ${shortDatePt(onDate)}` : "";
 
   if (matches.length === 1) return matches[0]!;

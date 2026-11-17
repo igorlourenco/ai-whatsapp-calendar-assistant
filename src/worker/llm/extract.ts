@@ -141,7 +141,8 @@ ${state.focus.map((f, i) => `E${i + 1} = ${f.label}`).join("\n")}
     parts.push(`Tarefas citadas recentemente (já estão salvas; NUNCA crie de novo):
 ${state.tasks.map((t, i) => `T${i + 1} = ${t.label}`).join("\n")}
 → "feito", "fiz", "já paguei", "pronto" sem nome = complete_task ref T1. "adia pra amanhã", "muda pra 15h" sem nome, logo após falar de tarefa = update_task ref T1.
-→ Se a mensagem diz o NOME da tarefa, use search e deixe ref null.`);
+→ Se a mensagem diz o NOME da tarefa, use search e deixe ref null.
+→ Uma palavra em comum NÃO faz ser tarefa: se o nome dito não é o de nenhuma T (ex: "doação de sangue" quando T1 = "Organizar doação de suprimentos"), é um EVENTO: use update/delete com search, nunca update_task/ref T.`);
   }
   if (state.lastList && state.focus.length && state.tasks?.length) {
     parts.push(`A última lista numerada mostrada foi de ${state.lastList === "tasks" ? "TAREFAS: número solto (\"feito o 2\", \"o 3\") = T<n>" : "EVENTOS: número solto (\"o 2\") = E<n>"}.`);
@@ -193,9 +194,10 @@ Formato: {"actions": [ ... ]} com um ou mais itens:
 - Sem data nenhuma ("marca dentista") → date null (o sistema pergunta). Nunca invente data.
 
 2. Alterar: {"type":"update","ref":"E1"|null,"search":"palavra-chave do evento"|null,"on_date":"YYYY-MM-DD"|null,"changes":{"title":null,"date":null,"start_time":null,"end_time":null,"all_day":null,"last_date":null,"category":null,"location":null,"notes":null,"reminder_minutes":null}}
-- Use ref quando for um evento do contexto; senão search = 1 a 3 palavras do nome (ex: "jantar ana"). Em changes, preencha só o que muda. "Me lembra X antes" de um evento existente = update com reminder_minutes.
+- Use ref quando for um evento do contexto; senão search = o nome como o usuário escreveu, sem encurtar (ex: "jantar ana", "doação de sangue"). Em changes, preencha só o que muda. "Me lembra X antes" de um evento existente = update com reminder_minutes.
 
 3. Apagar/cancelar: {"type":"delete","ref":"E1"|null,"search":"palavra-chave"|null,"on_date":"YYYY-MM-DD"|null,"only_that_day":true|false}
+- SÓ com pedido explícito de apagar: "cancela", "apaga", "desmarca", "remove", "tira", "não vou mais". "Não, era X" / "na verdade era X" é correção, NUNCA delete.
 - only_that_day=true quando é evento que se repete e o usuário fala de um dia ("cancela a aula de quarta").
 
 4. Consultar ("o que tenho hoje/amanhã/sábado/semana que vem"): {"type":"query","from":"YYYY-MM-DD","to":"YYYY-MM-DD","category":null,"search":null}
@@ -214,7 +216,7 @@ TAREFAS (to-dos) são diferentes de compromissos:
 - title curto, verbo no infinitivo, primeira letra maiúscula, sem data/hora ("Ligar pro banco").
 8. Concluir tarefa ("feito", "paguei o boleto", "fiz a 2"): {"type":"complete_task","ref":"T1"|null,"search":"palavra-chave"|null}
 - "feito todas", "fiz tudo" → um complete_task para CADA T da lista de tarefas citadas. "feito 1 e 3" → T1 e T3.
-9. Alterar tarefa ("adia o boleto pra segunda", "muda a tarefa do banco pra 15h"): {"type":"update_task","ref":"T1"|null,"search":null,"changes":{"title":null,"due_date":null,"due_time":null,"notes":null}}
+9. Alterar tarefa ("adia o boleto pra segunda", "muda a tarefa do banco pra 15h"): {"type":"update_task","ref":"T1"|null,"search":"palavra-chave"|null,"changes":{"title":null,"due_date":null,"due_time":null,"notes":null}}
 10. Apagar tarefa ("apaga a tarefa do banco", "esquece o boleto"): {"type":"delete_task","ref":null,"search":"banco"}
 11. Ver tarefas ("tarefas", "o que tenho pra fazer", "minhas pendências", "lista de tarefas"): {"type":"list_tasks"}
 - "o que tenho hoje/amanhã" continua sendo query (o sistema já junta as tarefas do período).
