@@ -10,7 +10,7 @@
  */
 
 import { memoryStore } from "../src/worker/calendar/memory-store";
-import { tasks as tasksTable } from "../src/worker/db/schema";
+import { shoppingItems, tasks as tasksTable } from "../src/worker/db/schema";
 import { handleMessage, type AppCtx } from "../src/worker/llm/execute";
 import { memoryDb } from "../src/worker/testing/sqlite";
 import { addDays, localDate, localDateTime, weekdayOf } from "../src/worker/time";
@@ -42,7 +42,9 @@ type Expect =
   | { kind: "task_create"; titleLike: RegExp; due: string | null; time?: string; repeats?: boolean }
   | { kind: "task_update"; titleLike: RegExp; due: string; time?: string }
   | { kind: "task_done"; titleLike: RegExp }
-  | { kind: "task_list"; replyLike: RegExp };
+  | { kind: "task_list"; replyLike: RegExp }
+  /** Shopping list: open item names afterwards (lowercase, any order). */
+  | { kind: "shop"; open: string[]; replyLike?: RegExp };
 
 const CASES: { msg: string; expect: Expect }[] = [
   { msg: "hoje às 14h até as 17h tenho que ir ver o tribunal do juri do meu professor", expect: { kind: "create", start: `${today}T14:00`, allDay: false, category: "faculdade" } },
@@ -77,7 +79,7 @@ const CASES: { msg: string; expect: Expect }[] = [
   // tasks (to-dos) vs events
   { msg: "me lembra de ligar pro banco amanhã às 10h", expect: { kind: "task_create", titleLike: /banco/i, due: addDays(today, 1), time: "10:00" } },
   // every task needs a date: asks, then the answer completes it
-  { msg: "comprar ração do cachorro", expect: { kind: "ask" } },
+  { msg: "me lembra de comprar ração do cachorro", expect: { kind: "ask" } },
   { msg: "amanhã", expect: { kind: "task_create", titleLike: /ra[cç][aã]o/i, due: addDays(today, 1) } },
   { msg: "pagar aluguel todo dia 5", expect: { kind: "task_create", titleLike: /aluguel/i, due: dayN(5), repeats: true } },
   // sorted by due (date-only first on the same day): ração, banco (amanhã 10h), boleto (28), aluguel (5)
@@ -85,6 +87,14 @@ const CASES: { msg: string; expect: Expect }[] = [
   { msg: "feito o 1", expect: { kind: "task_done", titleLike: /ra[cç][aã]o/i } },
   { msg: "adia o banco pra sexta", expect: { kind: "task_update", titleLike: /banco/i, due: next(5), time: "10:00" } },
   { msg: "paguei o boleto da faculdade", expect: { kind: "task_done", titleLike: /boleto/i } },
+  // shopping list: no date → list; dated purchase stays a task
+  { msg: "compra leite, ovos e pão", expect: { kind: "shop", open: ["leite", "ovos", "pão"] } },
+  { msg: "acabou o café, põe na lista", expect: { kind: "shop", open: ["leite", "ovos", "pão", "café"] } },
+  { msg: "o que falta comprar?", expect: { kind: "shop", open: ["leite", "ovos", "pão", "café"], replyLike: /leite[\s\S]*caf[eé]/i } },
+  { msg: "comprei o leite e os ovos", expect: { kind: "shop", open: ["pão", "café"] } },
+  { msg: "tira o café da lista", expect: { kind: "shop", open: ["pão"] } },
+  { msg: "comprar presente da Ana até sexta", expect: { kind: "task_create", titleLike: /presente/i, due: next(5) } },
+  { msg: "comprei tudo", expect: { kind: "shop", open: [] } },
   { msg: "dentista quarta 14h", expect: { kind: "create", start: `${next(3)}T14:00`, allDay: false } },
 ];
 
@@ -107,6 +117,10 @@ async function snapshot(ctx: AppCtx & { store: Store }): Promise<Map<string, Ev 
 
 type TaskRow = typeof tasksTable.$inferSelect;
 const taskSnap = async (ctx: AppCtx) => new Map(((await ctx.db.select().from(tasksTable)) as TaskRow[]).map((t) => [t.id, t]));
+const shopSnap = async (ctx: AppCtx) =>
+  JSON.stringify(((await ctx.db.select().from(shoppingItems)) as { name: string; status: string }[]).map((i) => [i.name, i.status]));
+const openShop = async (ctx: AppCtx) =>
+  ((await ctx.db.select().from(shoppingItems)) as { name: string; status: string }[]).filter((i) => i.status === "open").map((i) => i.name.toLowerCase()).sort();
 
 function check(
   exp: Expect,
@@ -115,6 +129,7 @@ function check(
   reply: string,
   tb: Map<string, TaskRow>,
   ta: Map<string, TaskRow>,
+  shop: string[],
 ): string | null {
   const added = [...after.values()].filter((e) => !before.has(e.id));
   const removed = [...before.values()].filter((e) => !after.has(e.id));
@@ -123,6 +138,13 @@ function check(
   const changedTasks = [...ta.values()].filter((t) => tb.has(t.id) && JSON.stringify(tb.get(t.id)) !== JSON.stringify(t));
   if (exp.kind.startsWith("task") && (added.length || removed.length)) return `task message touched events (+${added.length}/-${removed.length})`;
   if (!exp.kind.startsWith("task") && exp.kind !== "query" && (newTasks.length || changedTasks.length)) return `event message touched tasks`;
+  if (exp.kind === "shop") {
+    if (added.length || removed.length) return "shopping message touched events";
+    const want = [...exp.open].map((x) => x.toLowerCase()).sort();
+    if (JSON.stringify(shop) !== JSON.stringify(want)) return `open items ${JSON.stringify(shop)} ≠ ${JSON.stringify(want)}`;
+    if (exp.replyLike && !exp.replyLike.test(reply)) return "reply doesn't show expected items";
+    return null;
+  }
 
   switch (exp.kind) {
     case "task_create": {
@@ -201,11 +223,12 @@ async function round(r: number): Promise<Outcome[]> {
   for (const [i, c] of CASES.entries()) {
     const before = await snapshot(ctx);
     const tb = await taskSnap(ctx);
+    const sb = await shopSnap(ctx);
     let reply = "";
     let fail: string | null;
     try {
       reply = await handleMessage({ ...ctx, sourceMessageId: `eval-${r}-${i}` }, env, c.msg);
-      fail = check(c.expect, before, await snapshot(ctx), reply, tb, await taskSnap(ctx));
+      fail = check(c.expect, before, await snapshot(ctx), reply, tb, await taskSnap(ctx), await openShop(ctx));
     } catch (err) {
       fail = `threw: ${err instanceof Error ? err.message : err}`;
     }
@@ -215,6 +238,7 @@ async function round(r: number): Promise<Outcome[]> {
       after.size !== before.size ||
       [...after.values()].some((e) => JSON.stringify(before.get(e.id)) !== JSON.stringify(e)) ||
       ta.size !== tb.size ||
+      sb !== (await shopSnap(ctx)) ||
       [...ta.values()].some((t) => JSON.stringify(tb.get(t.id)) !== JSON.stringify(t));
     // The one unacceptable outcome: reply says it wrote, database says it didn't.
     const falseClaim = /^(✅|✏️|🗑️|📝 \*Tarefa anotada)/.test(reply) && !changed;
