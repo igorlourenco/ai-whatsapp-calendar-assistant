@@ -110,6 +110,20 @@ const fail = (c: Context, err: unknown) => c.json({ error: err instanceof Error 
 
 app.get("/debug/users", async (c) => c.json(await registry(c.env).registryList()));
 
+/** Connect a user's own iCloud (pnpm connect-icloud). Registers them if needed. */
+app.put("/debug/icloud", async (c) => {
+  const phone = c.req.query("user");
+  if (!phone) return c.json({ error: "?user=<phone> required" }, 400);
+  if (samePhone(phone, c.env.OWNER_PHONE)) return c.json({ error: "the owner's iCloud comes from ICLOUD_* (pnpm configure)" }, 400);
+  const body = await c.req.json<{ name?: string; username: string; password: string; categories: CategoryConfig[] }>();
+  try {
+    await registry(c.env).registryAdd(phone, body.name ?? null);
+    return c.json(await scheduler(c.env, phone).connectICloud({ phone, name: body.name ?? null, ...body }));
+  } catch (err) {
+    return fail(c, err);
+  }
+});
+
 app.delete("/debug/users/:phone", async (c) => c.json({ removed: await registry(c.env).registryRemove(c.req.param("phone")) }));
 
 app.get("/debug/state", async (c) => c.json(await scheduler(c.env, c.req.query("user")).debugSnapshot()));

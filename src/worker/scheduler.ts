@@ -16,7 +16,9 @@ import { handleMessage, type AppCtx } from "./llm/execute";
 import { fetchImage, workersAiVision } from "./llm/vision";
 import { nextWakeUp, runDue, type CronConfig } from "./notifications";
 import { addUser, findUser, findUserByToken, listUsers, loadProfile, removeUser, setupGuest, userSettings } from "./users";
-import { localDate } from "./time";
+import { calendarHome } from "./icloud/caldav";
+import { seal } from "./secrets";
+import { localDate, localDateTime } from "./time";
 import { canonPhone, samePhone, sendText } from "./zapi";
 
 /** Never sleep longer than this, so a missed reschedule self-heals. */
@@ -66,7 +68,7 @@ export class Scheduler extends DurableObject<Env> {
     return loadProfile(this.sqlDb);
   }
 
-  private appCtx(p: Profile | null): AppCtx {
+  private appCtx(p: Profile | null): Promise<AppCtx> {
     return makeCtx(this.env, this.sqlDb, p);
   }
 
@@ -75,9 +77,9 @@ export class Scheduler extends DurableObject<Env> {
     return { morningAt, eveningAt, taskNagMinutes, taskNagUntil };
   }
 
-  /** Who gets reminders/digests: the guest's own phone, or the owner. */
+  /** Who gets reminders/digests: the user's own phone (only the owner's object has none). */
   private notifyPhone(p: Profile | null): string {
-    return p?.storage === "local" && p.phone ? p.phone : this.env.OWNER_PHONE;
+    return p?.phone ?? this.env.OWNER_PHONE;
   }
 
   /** Store a WhatsApp message (idempotent on messageId) and process ASAP. */
@@ -101,7 +103,7 @@ export class Scheduler extends DurableObject<Env> {
   async reschedule(opts: { retryAt?: number } = {}): Promise<string> {
     const now = Date.now();
     const p = await this.profile();
-    let at = (await nextWakeUp(this.appCtx(p), this.cfg(p), new Date(now))).getTime();
+    let at = (await nextWakeUp(await this.appCtx(p), this.cfg(p), new Date(now))).getTime();
     if (opts.retryAt) at = Math.min(at, opts.retryAt);
 
     const [open] = await this.db
@@ -127,7 +129,7 @@ export class Scheduler extends DurableObject<Env> {
   async alarm(): Promise<void> {
     this.kicked = false;
     const p = await this.profile();
-    const ctx = this.appCtx(p);
+    const ctx = await this.appCtx(p);
     let retryAt: number | undefined;
 
     try {
@@ -198,6 +200,72 @@ export class Scheduler extends DurableObject<Env> {
       };
     });
     return buildFeed(p.name ? `Agenda · ${p.name}` : "Agenda", list, tz);
+  }
+
+  /**
+   * Point this user's object at their own iCloud (two-way, like the owner).
+   * Validates the login, stores it encrypted, replaces the categories with
+   * the chosen calendars and moves any events the user had in the bot's
+   * SQLite into iCloud. Safe to re-run (e.g. new app password).
+   */
+  async connectICloud(m: { phone: string; name: string | null; username: string; password: string; categories: CategoryConfig[] }) {
+    const account = { ICLOUD_USERNAME: m.username, ICLOUD_APP_PASSWORD: m.password };
+    await calendarHome(account); // throws on a bad login: nothing changes
+    const { rows } = categoryRows(m.categories);
+    const sealed = await seal(this.env.CREDENTIALS_KEY, JSON.stringify({ username: m.username, password: m.password }));
+
+    const before = await this.profile();
+    const local = before?.storage === "local" ? await sqliteStore(this.sqlDb, userSettings(this.env, before).tz, 30).allRows() : [];
+    const oldCats = await this.db.select().from(schema.categories);
+    const values = { phone: canonPhone(m.phone), name: m.name ?? before?.name ?? null, storage: "icloud" as const, icloudCredentials: sealed };
+    this.ctx.storage.transactionSync(() => {
+      this.db.insert(schema.profile).values({ id: 1, ...values }).onConflictDoUpdate({ target: schema.profile.id, set: values }).run();
+      this.db.delete(schema.categories).run();
+      this.db.insert(schema.categories).values(rows).run();
+    });
+
+    // Local events → iCloud. Idempotent per event (sourceMessageId), local
+    // rows removed only once every one of them is in iCloud.
+    const p = await this.profile();
+    const ctx = await this.appCtx(p);
+    for (const r of local) {
+      const allDay = r.allDay;
+      const ev = await ctx.store.createEvent({
+        title: r.title,
+        start: allDay ? localDate(r.startAt, ctx.tz) : localDateTime(r.startAt, ctx.tz),
+        end: allDay ? localDate(new Date(r.endAt.getTime() - 1), ctx.tz) : localDateTime(r.endAt, ctx.tz),
+        allDay,
+        category: oldCats.find((c) => c.id === r.categoryId)?.slug ?? null,
+        location: r.location,
+        notes: r.notes,
+        recurrence: r.recurrence,
+        reminderMinutes: r.reminderMinutes,
+        sourceMessageId: `moved:${r.id}`,
+      });
+      for (const ex of r.exdates) await ctx.store.deleteEvent(ev.id, new Date(ex));
+    }
+    if (local.length) await this.db.delete(schema.events);
+
+    if (!before || before.storage === "local") {
+      const first = m.name?.split(" ")[0];
+      await this.db
+        .insert(inboundMessages)
+        .values({
+          messageId: `icloud-connected:${Date.now()}`,
+          phone: m.phone,
+          text: "",
+          status: "answered",
+          reply: `📅 ${first ? `${first}, sua` : "Sua"} agenda do iCloud está conectada! O que você marcar aqui aparece no Calendário do iPhone, e o que você marcar lá eu também vejo.
+
+Categorias: ${rows.map((r) => `${r.emoji} ${r.name}`).join(", ")}.
+
+Tenta: _dentista sexta 15h_ · _o que tenho amanhã?_`,
+        })
+        .onConflictDoNothing();
+      this.kicked = true;
+    }
+    const nextAlarm = await this.reschedule().catch((err) => `not rescheduled: ${err}`);
+    return { categories: rows.length, movedEvents: local.length, nextAlarm };
   }
 
   /* ------------------------ registry (object "registry") ------------------- */
