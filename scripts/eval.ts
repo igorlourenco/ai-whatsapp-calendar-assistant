@@ -82,8 +82,8 @@ const CASES: { msg: string; expect: Expect }[] = [
   { msg: "me lembra de comprar ração do cachorro", expect: { kind: "ask" } },
   { msg: "amanhã", expect: { kind: "task_create", titleLike: /ra[cç][aã]o/i, due: addDays(today, 1) } },
   { msg: "pagar aluguel todo dia 5", expect: { kind: "task_create", titleLike: /aluguel/i, due: dayN(5), repeats: true } },
-  // sorted by due (date-only first on the same day): ração, banco (amanhã 10h), boleto (28), aluguel (5)
-  { msg: "tarefas", expect: { kind: "task_list", replyLike: /ra[cç][aã]o[\s\S]*banco[\s\S]*boleto[\s\S]*aluguel/i } },
+  // Grouped by list (category), each sorted by due; ração (amanhã) is the most urgent → "1." (for "feito o 1").
+  { msg: "tarefas", expect: { kind: "task_list", replyLike: /^(?=[\s\S]*\n1\. [^\n]*ra[cç][aã]o)(?=[\s\S]*banco)(?=[\s\S]*boleto)(?=[\s\S]*aluguel)/i } },
   { msg: "feito o 1", expect: { kind: "task_done", titleLike: /ra[cç][aã]o/i } },
   { msg: "adia o banco pra sexta", expect: { kind: "task_update", titleLike: /banco/i, due: next(5), time: "10:00" } },
   { msg: "paguei o boleto da faculdade", expect: { kind: "task_done", titleLike: /boleto/i } },

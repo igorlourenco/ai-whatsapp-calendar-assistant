@@ -41,7 +41,7 @@ afterAll(() => vi.useRealTimers());
 describe("tasks", () => {
   it("create with date (+time); confirmation re-read from the DB", async () => {
     expect(await step([task({ title: "Pagar boleto", due_date: "2026-11-20", due_time: "10:00" })], "m1")).toBe(
-      "📝 *Tarefa anotada*\n*Pagar boleto*\n🗓️ sexta, 20 de novembro · 10:00\n⏰ te cobro a cada 30 min a partir das 10:00 até você dizer *feito*",
+      "📝 *Tarefa anotada*\n🏠 *Pagar boleto*\n🗓️ sexta, 20 de novembro · 10:00\n⏰ te cobro a cada 30 min a partir das 10:00 até você dizer *feito*",
     );
   });
 
@@ -54,7 +54,7 @@ describe("tasks", () => {
     expect(buildPrompt(new Date(), TZ, [], state)).toContain("Tarefa incompleta aguardando a data");
 
     expect(await step([task({ title: "Comprar presente", due_date: "2026-11-27" })], "m2b")).toBe(
-      "📝 *Tarefa anotada*\n*Comprar presente*\n🗓️ sexta, 27 de novembro\n⏰ te cobro a cada 30 min até você dizer *feito*",
+      "📝 *Tarefa anotada*\n🏠 *Comprar presente*\n🗓️ sexta, 27 de novembro\n⏰ te cobro a cada 30 min até você dizer *feito*",
     );
     expect(state.draft).toBeNull();
     expect(state.tasks?.[0]?.label).toBe("Comprar presente — sex 27/11");
@@ -82,7 +82,7 @@ describe("tasks", () => {
 
   it("update by name: 'adia o boleto pra segunda' keeps the time and re-arms the nag", async () => {
     const r = await step([{ type: "update_task", search: "boleto", changes: { due_date: "2026-11-23" } }]);
-    expect(r).toMatch(/^✏️ \*Tarefa atualizada\*\n\*Pagar boleto\*\n🗓️ segunda, 23 de novembro · 10:00\n/);
+    expect(r).toMatch(/^✏️ \*Tarefa atualizada\*\n🏠 \*Pagar boleto\*\n🗓️ segunda, 23 de novembro · 10:00\n/);
   });
 
   it("ambiguous name → numbered question; the pick applies the pending action", async () => {
@@ -132,11 +132,71 @@ describe("tasks", () => {
   });
 });
 
+describe("task lists (categories)", () => {
+  let lctx: AppCtx;
+  let st: State = { draft: null, focus: [] };
+  const run = async (actions: Action[], id?: string) => {
+    const r = await executeActions({ ...lctx, sourceMessageId: id }, actions, st);
+    st = r.state;
+    return r.reply;
+  };
+
+  beforeAll(async () => {
+    lctx = {
+      ...ctx,
+      db: await memoryDb(),
+      store: memoryStore(TZ, 30, [
+        { slug: "pessoal", name: "Pessoal", emoji: "🏠", isDefault: true },
+        { slug: "trabalho", name: "Trabalho", emoji: "💼", isDefault: false },
+        { slug: "estudos", name: "Estudos", emoji: "🎓", isDefault: false },
+      ]),
+    };
+  });
+
+  it("create picks the category; unknown/none → default", async () => {
+    expect(await run([task({ title: "Entregar trabalho de penal", due_date: "2026-11-20", category: "estudos" })], "l1")).toMatch(
+      /^📝 \*Tarefa anotada\*\n🎓 \*Entregar trabalho de penal\*/,
+    );
+    await run([task({ title: "Mandar relatório", due_date: "2026-11-16", due_time: "17:00", category: "Trabalho" })], "l2");
+    await run([task({ title: "Trocar lâmpada", due_date: "2026-11-16", category: "zzz" })], "l3");
+    await run([task({ title: "Ler cap. 3", due_date: "2026-11-17", category: "estudos" })], "l4");
+    expect((await lctx.db.select().from(tasks)).map((t) => [t.title, t.category])).toEqual([
+      ["Entregar trabalho de penal", "estudos"],
+      ["Mandar relatório", "trabalho"],
+      ["Trocar lâmpada", "pessoal"],
+      ["Ler cap. 3", "estudos"],
+    ]);
+  });
+
+  it("list groups by category with continuous numbering; refs follow it", async () => {
+    // A task saved before categories existed shows up in the default group.
+    await lctx.db.insert(tasks).values({ id: "old", title: "Pagar luz", dueDate: "2026-11-18" });
+    expect(await run([{ type: "list_tasks" }])).toBe(
+      "📝 *Tarefas* (5)\n🏠 *Pessoal*\n1. Trocar lâmpada — hoje\n2. Pagar luz — qua 18/11\n\n💼 *Trabalho*\n3. Mandar relatório — hoje 17:00\n\n🎓 *Estudos*\n4. Ler cap. 3 — amanhã\n5. Entregar trabalho de penal — sex 20/11\n\n_Responda “feito 1”, “adia o 2 pra sexta”…_",
+    );
+    expect(await run([{ type: "complete_task", ref: "T3" }])).toBe("✅ *Feito:* Mandar relatório");
+  });
+
+  it("one list only; empty and unknown lists", async () => {
+    expect(await run([{ type: "list_tasks", category: "estudos" }])).toBe(
+      "🎓 *Tarefas · Estudos* (2)\n1. Ler cap. 3 — amanhã\n2. Entregar trabalho de penal — sex 20/11\n\n_Responda “feito 1”, “adia o 2 pra sexta”…_",
+    );
+    expect(st.tasks?.[1]?.label).toBe("Entregar trabalho de penal — sex 20/11");
+    expect(await run([{ type: "list_tasks", category: "trabalho" }])).toBe("💼 Nenhuma tarefa aberta em *Trabalho* ✨");
+    expect(await run([{ type: "list_tasks", category: "academia" }])).toContain("Não tenho a lista “academia”");
+  });
+
+  it("move a task to another list", async () => {
+    expect(await run([{ type: "update_task", search: "lâmpada", changes: { category: "trabalho" } }])).toMatch(/^✏️ \*Tarefa atualizada\*\n💼 \*Trocar lâmpada\*/);
+    expect(await run([{ type: "update_task", search: "lâmpada", changes: { category: "academia" } }])).toContain("Não tenho a lista “academia”");
+  });
+});
+
 describe("task nags off (the default)", () => {
   it("no nag line in the confirmation, and nothing is sent", async () => {
     const off: AppCtx = { ...ctx, db: await memoryDb(), taskNagMinutes: undefined };
     const r = await executeActions({ ...off, sourceMessageId: "off1" }, [task({ title: "Pagar luz", due_date: "2026-11-16", due_time: "10:00" })]);
-    expect(r.reply).toBe("📝 *Tarefa anotada*\n*Pagar luz*\n🗓️ segunda, 16 de novembro · 10:00");
+    expect(r.reply).toBe("📝 *Tarefa anotada*\n🏠 *Pagar luz*\n🗓️ segunda, 16 de novembro · 10:00");
     const sent: string[] = [];
     const offCfg = { morningAt: "07:00", eveningAt: "21:00" };
     for (const t of ["10:00", "10:30", "11:00"]) await runDue(off, offCfg, async (m) => void sent.push(m), localToUtc(`2026-11-16T${t}`, TZ));
