@@ -1,6 +1,7 @@
 import { formatAgenda, formatLine } from "../calendar/format";
 import {
   UserError,
+  defaultCategory,
   matchTitles,
   normText,
   slugify,
@@ -13,6 +14,8 @@ import type { Db } from "../db/client";
 import { messageEvents, type FocusItem, type PendingPick, type Recurrence } from "../db/schema";
 import {
   completeTask,
+  groupTasks,
+  taskCategory,
   createTask,
   deleteTask,
   findDuplicateTask,
@@ -431,6 +434,7 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
           start_time: a.due_time ?? null,
           recurrence: cleanRecurrence(a.recurrence),
           notes: a.notes ?? null,
+          category: a.category ?? null,
         };
         return `❓ *${a.title}*: pra quando? (ex: _hoje_, _sexta_, _amanhã 10h_)`;
       }
@@ -440,6 +444,7 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
         dueTime: a.due_time ?? null,
         recurrence: cleanRecurrence(a.recurrence),
         notes: a.notes ?? null,
+        category: await taskCategorySlug(ctx, a.category),
       };
       const dup = await findDuplicateTask(ctx.db, input);
       if (dup) {
@@ -473,6 +478,11 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
       const patch: TaskPatch = {};
       if (changes.title) patch.title = changes.title;
       if (changes.notes) patch.notes = changes.notes;
+      if (changes.category) {
+        const slug = await taskCategorySlug(ctx, changes.category, false);
+        if (!slug) throw new UserError(`Não tenho a lista “${changes.category}”. Pra criar: _cria a categoria ${changes.category}_.`);
+        patch.category = slug;
+      }
       if (changes.due_date) patch.dueDate = changes.due_date;
       if (changes.due_time) {
         patch.dueTime = changes.due_time;
@@ -497,13 +507,24 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
       return null;
     }
     case "list_tasks": {
-      const list = await openTasks(ctx.db);
+      const cats = await ctx.store.listCategories();
+      let open = await openTasks(ctx.db);
+      let head = "📝 *Tarefas*";
+      if (a.category) {
+        const slug = await taskCategorySlug(ctx, a.category, false);
+        const cat = cats.find((c) => c.slug === slug);
+        if (!cat) return `❓ Não tenho a lista “${a.category}”. Suas listas: ${cats.map((c) => `${c.emoji} ${c.name}`).join(", ")}.`;
+        open = open.filter((t) => taskCategory(t, cats)?.slug === cat.slug);
+        if (!open.length) return `${cat.emoji} Nenhuma tarefa aberta em *${cat.name}* ✨`;
+        head = `${cat.emoji} *Tarefas · ${cat.name}*`;
+      }
+      const { list } = groupTasks(open, cats);
       const today = localDate(new Date(), ctx.tz);
       if (list.length) {
         turn.next.tasks = list.slice(0, 10).map((t) => toTaskRef(t, today));
         turn.next.lastList = "tasks";
       }
-      return formatTaskList(list, today);
+      return formatTaskList(list, today, head, cats);
     }
     case "add_shopping": {
       const { added, existing } = await addItems(ctx.db, a.items, ctx.sourceMessageId);
@@ -588,6 +609,19 @@ ${ctx.user.feedUrl}
     case "unknown":
       return HELP_TEXT;
   }
+}
+
+/**
+ * Category slug for a task. Unknown/missing → the default category (on
+ * create), or null when `fallback` is false (explicit move or filter).
+ */
+async function taskCategorySlug(ctx: AppCtx, raw: string | null | undefined, fallback = true): Promise<string | null> {
+  const cats = await ctx.store.listCategories();
+  const want = raw ? slugify(raw) : null;
+  const hit = want ? (cats.find((c) => c.slug === want) ?? cats.find((c) => slugify(c.name) === want)) : null;
+  if (hit) return hit.slug;
+  if (!fallback) return null;
+  return defaultCategory(cats)?.slug ?? null;
 }
 
 type TaskChanges = Extract<Action, { type: "update_task" }>["changes"];

@@ -79,6 +79,7 @@ export const actionSchema = z.discriminatedUnion("type", [
     due_time: opt(hhmm),
     recurrence: opt(recurrence),
     notes: opt(z.string()),
+    category: opt(z.string()),
   }),
   z.object({ type: z.literal("complete_task"), ref: opt(z.string()), search: opt(z.string()) }),
   z.object({
@@ -90,10 +91,11 @@ export const actionSchema = z.discriminatedUnion("type", [
       due_date: opt(ymd),
       due_time: opt(hhmm),
       notes: opt(z.string()),
+      category: opt(z.string()),
     }),
   }),
   z.object({ type: z.literal("delete_task"), ref: opt(z.string()), search: opt(z.string()) }),
-  z.object({ type: z.literal("list_tasks") }),
+  z.object({ type: z.literal("list_tasks"), category: opt(z.string()) }),
   z.object({ type: z.literal("add_shopping"), items: z.array(z.string().min(1)).min(1) }),
   z.object({ type: z.literal("bought"), items: opt(z.array(z.string().min(1))), all: opt(z.boolean()) }),
   z.object({ type: z.literal("remove_shopping"), items: z.array(z.string().min(1)).min(1) }),
@@ -223,15 +225,19 @@ TAREFAS (to-dos) são diferentes de compromissos:
 - Tarefa (create_task) = algo que você precisa FAZER/RESOLVER: pagar, comprar (com data/hora), ligar, mandar, enviar, entregar, responder, renovar, levar, buscar, resolver. Também tudo que começa com "me lembra de …", "lembrar de …", "não esquecer de …", "tarefa: …", "to-do".
 - "me lembra X min/h antes" de um evento citado continua sendo update do evento (reminder_minutes), não tarefa.
 
-7. Criar tarefa: {"type":"create_task","title":"Pagar boleto","due_date":"YYYY-MM-DD"|null,"due_time":"HH:mm"|null,"recurrence":null,"notes":null}
+Tarefas usam as MESMAS categorias dos compromissos (são as "listas" de tarefas: "tarefas da faculdade" = categoria de estudos/faculdade, "de casa" = casa ou a [padrão] se não houver casa).
+7. Criar tarefa: {"type":"create_task","title":"Pagar boleto","due_date":"YYYY-MM-DD"|null,"due_time":"HH:mm"|null,"recurrence":null,"notes":null,"category":"slug"}
+- category: o slug que melhor encaixa (como nos compromissos; "tarefa de casa: …", "pro trabalho: …" decide). Lista citada que não existe ("põe na lista Mercado: …") → create_category antes.
 - Sem data → due_date null (o sistema pergunta "pra quando?"). Nunca invente data. Hora só se disser ("às 10h") — a partir dela o usuário é cobrado.
 - Repete ("todo dia 5", "toda segunda") → recurrence como nos compromissos, due_date = próxima ocorrência.
 - title curto, verbo no infinitivo, primeira letra maiúscula, sem data/hora ("Ligar pro banco").
 8. Concluir tarefa ("feito", "paguei o boleto", "fiz a 2"): {"type":"complete_task","ref":"T1"|null,"search":"palavra-chave"|null}
 - "feito todas", "fiz tudo" → um complete_task para CADA T da lista de tarefas citadas. "feito 1 e 3" → T1 e T3.
-9. Alterar tarefa ("adia o boleto pra segunda", "muda a tarefa do banco pra 15h"): {"type":"update_task","ref":"T1"|null,"search":"palavra-chave"|null,"changes":{"title":null,"due_date":null,"due_time":null,"notes":null}}
+9. Alterar tarefa ("adia o boleto pra segunda", "muda a tarefa do banco pra 15h"): {"type":"update_task","ref":"T1"|null,"search":"palavra-chave"|null,"changes":{"title":null,"due_date":null,"due_time":null,"notes":null,"category":null}}
+- "muda o relatório pra trabalho", "passa a 2 pra lista da faculdade" → changes.category = slug.
 10. Apagar tarefa ("apaga a tarefa do banco", "esquece o boleto"): {"type":"delete_task","ref":null,"search":"banco"}
-11. Ver tarefas ("tarefas", "o que tenho pra fazer", "minhas pendências", "lista de tarefas"): {"type":"list_tasks"}
+11. Ver tarefas ("tarefas", "o que tenho pra fazer", "minhas pendências", "lista de tarefas"): {"type":"list_tasks","category":null}
+- De uma lista só ("tarefas da faculdade", "o que tenho pra fazer do trabalho", "pendências de casa") → category = slug.
 - "o que tenho hoje/amanhã" continua sendo query (o sistema já junta as tarefas do período).
 
 LISTA DE COMPRAS (uma lista só, sem datas):

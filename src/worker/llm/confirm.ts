@@ -1,7 +1,7 @@
 import type { StoreCategory, StoreEvent } from "../calendar/store";
 import type { Recurrence } from "../db/schema";
 import type { Task } from "../db/schema";
-import { getTask } from "../tasks";
+import { getTask, taskCategory } from "../tasks";
 import { humanDatePt, localDate, localTime, shortDatePt } from "../time";
 import type { AppCtx, WriteRecord } from "./execute";
 
@@ -47,7 +47,7 @@ export async function renderConfirmations(ctx: AppCtx, writes: WriteRecord[]): P
         continue;
       }
       const head = { created: "📝 *Tarefa anotada*", updated: "✏️ *Tarefa atualizada*", exists: "ℹ️ *Já estava na lista*" }[w.action];
-      blocks.push(`${head}\n${describeTask(t, ctx.taskNagMinutes ?? 0)}`);
+      blocks.push(`${head}\n${describeTask(t, ctx.taskNagMinutes ?? 0, taskCategory(t, await ctx.store.listCategories()))}`);
     } else if (w.kind === "task_deleted") {
       blocks.push(`🗑️ *Tarefa apagada:* ${w.title}`);
     } else {
@@ -82,8 +82,8 @@ function describe(ctx: AppCtx, ev: StoreEvent, cat: StoreCategory | null): strin
   return lines.join("\n");
 }
 
-function describeTask(t: Task, every: number): string {
-  const lines = [`*${t.title}*`];
+function describeTask(t: Task, every: number, cat: StoreCategory | null): string {
+  const lines = [`${cat ? `${cat.emoji} ` : ""}*${t.title}*`];
   if (t.dueDate) {
     lines.push(`🗓️ ${humanDatePt(t.dueDate)}${t.dueTime ? ` · ${t.dueTime}` : ""}`);
     if (every > 0) lines.push(`⏰ te cobro a cada ${every} min${t.dueTime ? ` a partir das ${t.dueTime}` : ""} até você dizer *feito*`);
