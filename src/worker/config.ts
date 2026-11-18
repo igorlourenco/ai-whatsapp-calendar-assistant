@@ -31,6 +31,15 @@ type SettingsEnv = Partial<Record<keyof typeof DEFAULTS, string>>;
 
 const hhmm = (v: string | undefined, fallback: string) => (v && /^\d{2}:\d{2}$/.test(v) ? v : fallback);
 
+export function validTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function validTz(tz: string | undefined): string {
   if (!tz) return DEFAULTS.TIMEZONE;
   try {

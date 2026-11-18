@@ -1,6 +1,6 @@
 /**
  * Z-API client. The instance's "on message received" webhook points here; the
- * bot only talks to OWNER_PHONE (the instance can be shared with other uses).
+ * bot talks to OWNER_PHONE and to users who joined with the invite code.
  */
 
 export type ZapiEnv = {
@@ -35,12 +35,14 @@ export function digits(phone: string): string {
  * reports older BR numbers without it (5511 9876-5432 vs 5511 99876-5432).
  */
 export function samePhone(a: string, b: string): boolean {
-  const canon = (p: string) => {
-    const d = digits(p);
-    if (d.startsWith("55") && d.length === 13 && d[4] === "9") return d.slice(0, 4) + d.slice(5);
-    return d;
-  };
-  return canon(a) === canon(b);
+  return canonPhone(a) === canonPhone(b);
+}
+
+/** One spelling per number (BR mobile without the 9th digit): the user's key. */
+export function canonPhone(p: string): string {
+  const d = digits(p);
+  if (d.startsWith("55") && d.length === 13 && d[4] === "9") return d.slice(0, 4) + d.slice(5);
+  return d;
 }
 
 export async function sendText(env: ZapiEnv, phone: string, message: string): Promise<void> {
