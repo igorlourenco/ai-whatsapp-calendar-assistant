@@ -57,6 +57,13 @@
       "when": 1795030171614,
       "tag": "0007_task_nag",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1795033634477,
+      "tag": "0008_task_category",
+      "breakpoints": true
     }
   ]
 }

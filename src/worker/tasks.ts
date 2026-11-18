@@ -1,7 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 
 import { expandOccurrences } from "./calendar/recurrence";
-import { matchTitles, normText } from "./calendar/store";
+import { defaultCategory, matchTitles, normText, type StoreCategory } from "./calendar/store";
 import type { Db } from "./db/client";
 import { tasks, type Recurrence, type Task, type TaskRef } from "./db/schema";
 import { addDays, diffDays, localDate, localToUtc, shortDatePt, weekdayOf } from "./time";
@@ -18,6 +18,8 @@ export type TaskInput = {
   dueTime?: string | null;
   recurrence?: Recurrence | null;
   notes?: string | null;
+  /** Category slug. */
+  category?: string | null;
 };
 
 const WEEKDAY_SHORT = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
@@ -43,6 +45,7 @@ export async function createTask(db: Db, id: string, input: TaskInput): Promise<
       dueTime: input.dueDate ? (input.dueTime ?? null) : null,
       recurrence: input.dueDate ? (input.recurrence ?? null) : null,
       notes: input.notes ?? null,
+      category: input.category ?? null,
     })
     .onConflictDoNothing();
   const row = await getTask(db, id);
@@ -85,7 +88,7 @@ export async function findDuplicateTask(db: Db, input: TaskInput): Promise<Task 
   );
 }
 
-export type TaskPatch = { title?: string; dueDate?: string; dueTime?: string | null; notes?: string | null };
+export type TaskPatch = { title?: string; dueDate?: string; dueTime?: string | null; notes?: string | null; category?: string };
 
 export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<Task | null> {
   const cur = await getTask(db, id);
@@ -98,6 +101,7 @@ export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<
     .set({
       title: patch.title ?? cur.title,
       notes: patch.notes !== undefined ? patch.notes : cur.notes,
+      category: patch.category ?? cur.category,
       dueDate,
       dueTime,
       recurrence: dueDate ? cur.recurrence : null,
@@ -225,11 +229,46 @@ export function taskLine(t: Task, today: string): string {
   return `${t.title}${due ? ` — ${due}` : ""}${t.recurrence ? " 🔁" : ""}`;
 }
 
-/** Numbered list; the numbers match the T1… refs the model gets next. */
-export function formatTaskList(list: Task[], today: string, head = "📝 *Tarefas*"): string {
+/* ------------------------------ categories ------------------------------ */
+
+/** The task's category: its own slug if it still exists, else the default one. */
+export function taskCategory<C extends StoreCategory>(t: Pick<Task, "category">, cats: C[]): C | null {
+  return (t.category && cats.find((c) => c.slug === t.category)) || defaultCategory(cats);
+}
+
+/**
+ * Tasks grouped by category; groups in order of their most urgent task (input
+ * is due-ordered, so: first appearance), each keeping the due order. `list`
+ * is the same tasks reordered to match: number i in the grouped message is
+ * list[i - 1], so T refs must be built from it.
+ */
+export function groupTasks(tasks: Task[], cats: StoreCategory[]): { list: Task[]; groups: { cat: StoreCategory | null; tasks: Task[] }[] } {
+  const groups = new Map<string, { cat: StoreCategory | null; tasks: Task[] }>();
+  for (const t of tasks) {
+    const cat = taskCategory(t, cats);
+    const key = cat?.slug ?? "";
+    if (!groups.has(key)) groups.set(key, { cat, tasks: [] });
+    groups.get(key)!.tasks.push(t);
+  }
+  const out = [...groups.values()];
+  return { list: out.flatMap((g) => g.tasks), groups: out };
+}
+
+/**
+ * Numbered list; the numbers match the T1… refs the model gets next. With
+ * tasks in more than one category, one block per category (numbering
+ * continues across blocks). Pass tasks already ordered by groupTasks.
+ */
+export function formatTaskList(list: Task[], today: string, head = "📝 *Tarefas*", cats: StoreCategory[] = []): string {
   if (!list.length) return "📝 Nenhuma tarefa aberta ✨";
-  const lines = list.map((t, i) => `${i + 1}. ${taskLine(t, today)}`).join("\n");
-  return `${head} (${list.length})\n${lines}\n\n_Responda “feito 1”, “adia o 2 pra sexta”…_`;
+  const { groups } = groupTasks(list, cats);
+  let n = 0;
+  const line = (t: Task) => `${++n}. ${taskLine(t, today)}`;
+  const body =
+    groups.length > 1
+      ? groups.map((g) => `${g.cat ? `${g.cat.emoji} *${g.cat.name}*` : "📌 *Outras*"}\n${g.tasks.map(line).join("\n")}`).join("\n\n")
+      : list.map(line).join("\n");
+  return `${head} (${list.length})\n${body}\n\n_Responda “feito 1”, “adia o 2 pra sexta”…_`;
 }
 
 /** Compact section for digests and agenda queries (no numbering hint). */

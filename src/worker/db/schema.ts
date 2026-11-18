@@ -177,6 +177,8 @@ export const tasks = sqliteTable(
     /** Repeating task: marking it done moves it to the next due date. */
     recurrence: text("recurrence", { mode: "json" }).$type<Recurrence | null>(),
     notes: text("notes"),
+    /** Category slug (same categories as events); null/unknown = the default one. */
+    category: text("category"),
     status: text("status").$type<"open" | "done">().notNull().default("open"),
     /** Nag sent for the current due time (cleared whenever the due changes). */
     remindedAt: ts("reminded_at"),
