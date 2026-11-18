@@ -128,10 +128,20 @@ describe("guest flows on the SQLite store", () => {
 
   it("settings: change, then show", async () => {
     expect(await step([{ type: "settings", morning_at: "08:00", reminder_minutes: 15 }])).toBe(
-      "⚙️ *Configuração salva*\n☀️ resumo do dia: 08:00\n🌙 prévia de amanhã: 21:00\n⏰ lembrete padrão: 15 min antes\n🌎 fuso: America/Araguaina",
+      "⚙️ *Configuração salva*\n☀️ resumo do dia: 08:00\n🌙 prévia de amanhã: 21:00\n⏰ lembrete padrão: 15 min antes\n🔔 cobrança de tarefas: desligada (_me cobra a cada 30 min_ liga)\n🌎 fuso: America/Araguaina",
     );
     expect(await loadProfile(ctx.db)).toMatchObject({ morningAt: "08:00", defaultReminder: 15, storage: "local" });
     expect(await step([{ type: "settings", timezone: "Marte/Olympus" }])).toContain("Não reconheci o fuso");
+  });
+
+  it("settings: task nags off by default; turned on (min 5) and off by message", async () => {
+    expect(userSettings({}, null).taskNagMinutes).toBe(0);
+    expect(await step([{ type: "settings", task_nag_minutes: 20 }])).toContain("🔔 cobrança de tarefas: a cada 20 min");
+    expect(userSettings({}, await loadProfile(ctx.db)).taskNagMinutes).toBe(20);
+    await step([{ type: "settings", task_nag_minutes: 2 }]);
+    expect((await loadProfile(ctx.db))?.taskNagMinutes).toBe(5);
+    expect(await step([{ type: "settings", task_nag_minutes: 0 }])).toContain("🔔 cobrança de tarefas: desligada");
+    expect(userSettings({ TASK_NAG_MINUTES: "30" }, await loadProfile(ctx.db)).taskNagMinutes).toBe(0);
   });
 
   it("calendar link: guest gets the feed; owner is told it's iCloud", async () => {

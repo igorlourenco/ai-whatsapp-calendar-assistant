@@ -12,7 +12,7 @@ import { memoryDb } from "./testing/sqlite";
 import { localDateTime, localToUtc } from "./time";
 
 const TZ = "America/Araguaina";
-const cfg = { morningAt: "07:00", eveningAt: "21:00" };
+const cfg = { morningAt: "07:00", eveningAt: "21:00", taskNagMinutes: 30 };
 let ctx: AppCtx;
 let state: State = { draft: null, focus: [] };
 
@@ -33,6 +33,7 @@ beforeAll(async () => {
     db: await memoryDb(),
     tz: TZ,
     defaultReminder: 30,
+    taskNagMinutes: 30,
   };
 });
 afterAll(() => vi.useRealTimers());
@@ -128,6 +129,19 @@ describe("tasks", () => {
     });
     expect(p).toContain("T1 = Pagar boleto — hoje");
     expect(p).toContain("última lista numerada mostrada foi de TAREFAS");
+  });
+});
+
+describe("task nags off (the default)", () => {
+  it("no nag line in the confirmation, and nothing is sent", async () => {
+    const off: AppCtx = { ...ctx, db: await memoryDb(), taskNagMinutes: undefined };
+    const r = await executeActions({ ...off, sourceMessageId: "off1" }, [task({ title: "Pagar luz", due_date: "2026-11-16", due_time: "10:00" })]);
+    expect(r.reply).toBe("📝 *Tarefa anotada*\n*Pagar luz*\n🗓️ segunda, 16 de novembro · 10:00");
+    const sent: string[] = [];
+    const offCfg = { morningAt: "07:00", eveningAt: "21:00" };
+    for (const t of ["10:00", "10:30", "11:00"]) await runDue(off, offCfg, async (m) => void sent.push(m), localToUtc(`2026-11-16T${t}`, TZ));
+    expect(sent.filter((m) => m.startsWith("⏰ *Tarefa"))).toHaveLength(0);
+    expect(localDateTime(await nextWakeUp(off, offCfg, localToUtc("2026-11-16T10:00", TZ)), TZ)).toBe("2026-11-16T21:00");
   });
 });
 
