@@ -13,6 +13,7 @@
     "eval": "tsx --env-file=.dev.vars scripts/eval.ts",
     "db": "tsx --env-file=.dev.vars scripts/db.ts",
     "configure": "tsx scripts/setup.ts",
+    "connect-icloud": "tsx --env-file=.dev.vars scripts/connect-icloud.ts",
     "eval:images": "tsx --env-file=.dev.vars scripts/eval-images.ts"
   },
   "dependencies": {
