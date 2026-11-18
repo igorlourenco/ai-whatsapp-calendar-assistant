@@ -1,0 +1,1 @@
+ALTER TABLE `profile` ADD `icloud_credentials` text;

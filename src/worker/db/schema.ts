@@ -240,7 +240,9 @@ export const events = sqliteTable(
 /**
  * Who this Durable Object belongs to (single row, id=1). Absent on the
  * owner's object until they change a setting: null fields fall back to the
- * deployment's settings (env). storage "icloud" = owner, "local" = guest.
+ * deployment's settings (env). storage "icloud" = events in iCloud (the
+ * owner's via env, or the user's own via icloudCredentials); "local" =
+ * events in this SQLite, shown through the ICS feed.
  */
 export const profile = sqliteTable("profile", {
   id: integer("id").primaryKey().default(1),
@@ -251,8 +253,14 @@ export const profile = sqliteTable("profile", {
   morningAt: text("morning_at"),
   eveningAt: text("evening_at"),
   defaultReminder: integer("default_reminder"),
-  /** webcal:// link of this user's ICS feed (guests only). */
+  /** webcal:// link of this user's ICS feed (storage "local" only). */
   feedUrl: text("feed_url"),
+  /**
+   * This user's own iCloud (storage "icloud" + phone set): Apple ID and
+   * app-specific password, AES-GCM encrypted with CREDENTIALS_KEY. Null on
+   * the owner's object, which uses the deployment's ICLOUD_* secrets.
+   */
+  icloudCredentials: text("icloud_credentials"),
   createdAt: ts("created_at").notNull().$defaultFn(now),
 });
 
