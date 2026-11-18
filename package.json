@@ -14,7 +14,8 @@
     "db": "tsx --env-file=.dev.vars scripts/db.ts",
     "configure": "tsx scripts/setup.ts",
     "connect-icloud": "tsx --env-file=.dev.vars scripts/connect-icloud.ts",
-    "eval:images": "tsx --env-file=.dev.vars scripts/eval-images.ts"
+    "eval:images": "tsx --env-file=.dev.vars scripts/eval-images.ts",
+    "eval:audio": "tsx --env-file=.dev.vars scripts/eval-audio.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.4",
