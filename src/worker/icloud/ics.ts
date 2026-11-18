@@ -171,18 +171,9 @@ export function rruleOf(r: Recurrence, allDay: boolean): string {
   return `RRULE:${parts.join(";")}`;
 }
 
-/**
- * Serialize a new event. One-off timed events are written in UTC (an exact
- * instant). Recurring timed events are written in floating local time, so the
- * RRULE expands on wall-clock time: a weekly 19:00 class stays at 19:00 across
- * DST changes in any timezone.
- */
-export function buildIcs(ev: NewEvent, tz: string, now = new Date()): string {
-  const lines = [
-    "BEGIN:VCALENDAR",
-    "VERSION:2.0",
-    "PRODID:-//ai-assistant-wpp//PT-BR",
-    "CALSCALE:GREGORIAN",
+/** VEVENT lines of one event (see buildIcs for the time encoding). */
+function veventLines(ev: NewEvent, tz: string, now: Date, extra: string[] = []): string[] {
+  return [
     "BEGIN:VEVENT",
     `UID:${ev.uid}`,
     `DTSTAMP:${utcStamp(now)}`,
@@ -195,6 +186,7 @@ export function buildIcs(ev: NewEvent, tz: string, now = new Date()): string {
         ? [`DTSTART:${localStamp(ev.start, tz)}`, `DTEND:${localStamp(ev.end, tz)}`]
         : [`DTSTART:${utcStamp(ev.start)}`, `DTEND:${utcStamp(ev.end)}`]),
     ...(ev.recurrence ? [rruleOf(ev.recurrence, ev.allDay)] : []),
+    ...extra,
     ...(ev.location ? [`LOCATION:${escapeText(ev.location)}`] : []),
     ...(ev.notes ? [`DESCRIPTION:${escapeText(ev.notes)}`] : []),
     ...(!ev.allDay && ev.reminderMinutes != null
@@ -208,9 +200,53 @@ export function buildIcs(ev: NewEvent, tz: string, now = new Date()): string {
         ]
       : []),
     "END:VEVENT",
-    "END:VCALENDAR",
   ];
+}
+
+const HEADER = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//ai-assistant-wpp//PT-BR", "CALSCALE:GREGORIAN"];
+
+/**
+ * Serialize a new event. One-off timed events are written in UTC (an exact
+ * instant). Recurring timed events are written in floating local time, so the
+ * RRULE expands on wall-clock time: a weekly 19:00 class stays at 19:00 across
+ * DST changes in any timezone.
+ */
+export function buildIcs(ev: NewEvent, tz: string, now = new Date()): string {
+  return [...HEADER, ...veventLines(ev, tz, now), "END:VCALENDAR"].map(fold).join("\r\n") + "\r\n";
+}
+
+export type FeedEvent = NewEvent & { exdates?: string[]; category?: string | null };
+
+/**
+ * Whole calendar as one subscribable feed (webcal://…/cal/<token>.ics).
+ * Read-only on the phone; refreshed by the calendar app every ~15 min.
+ */
+export function buildFeed(name: string, list: FeedEvent[], tz: string, now = new Date()): string {
+  const lines = [
+    ...HEADER,
+    "METHOD:PUBLISH",
+    `X-WR-CALNAME:${escapeText(name)}`,
+    `X-WR-TIMEZONE:${tz}`,
+    "REFRESH-INTERVAL;VALUE=DURATION:PT15M",
+    "X-PUBLISHED-TTL:PT15M",
+  ];
+  for (const ev of list) {
+    // EXDATE must match DTSTART's form (DATE / floating local / UTC).
+    const ex = (ev.exdates ?? []).map((iso) => {
+      const d = new Date(iso);
+      if (ev.allDay) return `EXDATE;VALUE=DATE:${dateValue(localDateOf(d, tz))}`;
+      return `EXDATE:${ev.recurrence ? localStamp(d, tz) : utcStamp(d)}`;
+    });
+    const cat = ev.category ? [`CATEGORIES:${escapeText(ev.category)}`] : [];
+    lines.push(...veventLines(ev, tz, now, [...ex, ...cat]));
+  }
+  lines.push("END:VCALENDAR");
   return lines.map(fold).join("\r\n") + "\r\n";
+}
+
+function localDateOf(d: Date, tz: string): string {
+  const p = toLocalParts(d, tz);
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}`;
 }
 
 /* ------------------------- editing existing objects ---------------------- */

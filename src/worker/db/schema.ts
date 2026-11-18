@@ -209,3 +209,63 @@ export const shoppingItems = sqliteTable(
 );
 
 export type ShoppingItem = typeof shoppingItems.$inferSelect;
+
+/**
+ * Events of users without iCloud (everyone but the owner). Same shape the
+ * CalendarStore exposes; served to their phones as a read-only ICS feed.
+ */
+export const events = sqliteTable(
+  "events",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    allDay: integer("all_day", { mode: "boolean" }).notNull(),
+    startAt: ts("start_at").notNull(),
+    /** Exclusive. */
+    endAt: ts("end_at").notNull(),
+    categoryId: text("category_id"),
+    location: text("location"),
+    notes: text("notes"),
+    recurrence: text("recurrence", { mode: "json" }).$type<Recurrence | null>(),
+    /** Cancelled occurrences of a recurring event (ISO instants). */
+    exdates: text("exdates", { mode: "json" }).$type<string[]>().notNull().default([]),
+    reminderMinutes: integer("reminder_minutes"),
+    sourceMessageId: text("source_message_id"),
+    createdAt: ts("created_at").notNull().$defaultFn(now),
+    updatedAt: ts("updated_at").notNull().$defaultFn(now),
+  },
+  (t) => [index("events_start_idx").on(t.startAt)],
+);
+
+/**
+ * Who this Durable Object belongs to (single row, id=1). Absent on the
+ * owner's object until they change a setting: null fields fall back to the
+ * deployment's settings (env). storage "icloud" = owner, "local" = guest.
+ */
+export const profile = sqliteTable("profile", {
+  id: integer("id").primaryKey().default(1),
+  phone: text("phone"),
+  name: text("name"),
+  storage: text("storage").$type<"icloud" | "local">().notNull().default("icloud"),
+  tz: text("tz"),
+  morningAt: text("morning_at"),
+  eveningAt: text("evening_at"),
+  defaultReminder: integer("default_reminder"),
+  /** webcal:// link of this user's ICS feed (guests only). */
+  feedUrl: text("feed_url"),
+  createdAt: ts("created_at").notNull().$defaultFn(now),
+});
+
+export type Profile = typeof profile.$inferSelect;
+
+/** Registry (only in the "registry" object): who may use the bot. */
+export const users = sqliteTable("users", {
+  /** Canonical digits (Brazil's 9th digit dropped), see zapi.canonPhone. */
+  phone: text("phone").primaryKey(),
+  name: text("name"),
+  /** Secret in the ICS feed URL (/cal/<token>.ics). */
+  icsToken: text("ics_token").notNull().unique(),
+  createdAt: ts("created_at").notNull().$defaultFn(now),
+});
+
+export type User = typeof users.$inferSelect;
