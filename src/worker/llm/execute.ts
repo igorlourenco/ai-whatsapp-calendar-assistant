@@ -37,7 +37,8 @@ import { renderConfirmations } from "./confirm";
 import type { DeepSeekEnv } from "./deepseek";
 import { batchItems, parseBatchReply, previewMessage, type BatchAnswer, type CreateAction } from "./batch";
 import { extractActions, type Action } from "./extract";
-import type { Vision } from "./vision";
+import type { Transcribe } from "./transcribe";
+import { MediaTooLarge, type Vision } from "./vision";
 import { loadState, pushFocus, pushTasks, saveState, toFocus, type State } from "./state";
 
 export type AppCtx = {
@@ -74,9 +75,12 @@ export const HELP_TEXT = `🤔 Não entendi. Exemplos:
 • _resumo às 8h_ · _link da agenda_`;
 
 export type Incoming = { text: string; mediaUrl?: string | null; mediaMime?: string | null };
+type Download = (url: string) => Promise<{ bytes: Uint8Array; mime: string }>;
 export type MediaDeps = {
   vision?: Vision;
-  download?: (url: string) => Promise<{ bytes: Uint8Array; mime: string }>;
+  download?: Download;
+  transcribe?: Transcribe;
+  downloadAudio?: Download;
 };
 
 const BATCH_REMINDER = "📷 _Os eventos da imagem ainda esperam sua resposta (sim / não / números)._";
@@ -93,15 +97,49 @@ export async function handleMessage(
   media: MediaDeps = {},
 ): Promise<string> {
   const msg: Incoming = typeof input === "string" ? { text: input } : input;
-  const text = msg.text.trim();
-  const state = await loadState(ctx.db);
-  const categories = await ctx.store.listCategories();
+
+  // Voice note: transcribed, then handled exactly like the typed message.
+  if (msg.mediaUrl && msg.mediaMime?.startsWith("audio/")) {
+    const heard = await transcribeAudio(msg, media);
+    if (!heard.text) return heard.reply;
+    return `${heard.reply}\n\n${await handleText(ctx, env, heard.text)}`;
+  }
 
   if (msg.mediaUrl) {
+    const state = await loadState(ctx.db);
+    const categories = await ctx.store.listCategories();
     const r = await handleImage(ctx, env, msg, media, state, categories);
     await saveState(ctx.db, r.state);
     return r.reply;
   }
+  return handleText(ctx, env, msg.text);
+}
+
+/** "🎤 _texto_" echo plus the text to act on, or a reply when there's nothing to act on. */
+async function transcribeAudio(msg: Incoming, media: MediaDeps): Promise<{ text: string; reply: string }> {
+  const stop = (reply: string) => ({ text: "", reply });
+  if (!media.transcribe || !media.downloadAudio) return stop("🙏 Áudio não está ativado nesta instalação. Pode escrever?");
+  let audio: { bytes: Uint8Array; mime: string };
+  try {
+    audio = await media.downloadAudio(msg.mediaUrl!);
+  } catch (err) {
+    if (err instanceof MediaTooLarge) return stop("🙏 Áudio muito longo. Manda um mais curto (até uns 2 min) ou escreve?");
+    throw err;
+  }
+  const heard = await media.transcribe(audio.bytes, audio.mime);
+  console.log("[transcribe]", heard.length, JSON.stringify(heard.slice(0, 300)));
+  if (!heard) return stop("🤔 Não consegui entender o áudio. Pode repetir ou escrever?");
+  const caption = msg.text.trim();
+  const text = caption ? `${caption}\n${heard}` : heard;
+  const shown = heard.length > 300 ? `${heard.slice(0, 300)}…` : heard;
+  return { text, reply: `🎤 _${shown.replace(/[_*~]/g, "")}_` };
+}
+
+/** A typed (or transcribed) message. */
+async function handleText(ctx: AppCtx, env: DeepSeekEnv, input: string): Promise<string> {
+  const text = input.trim();
+  const state = await loadState(ctx.db);
+  const categories = await ctx.store.listCategories();
 
   // Answer to an image preview? Decided by rules, never by the model.
   if (state.batch) {

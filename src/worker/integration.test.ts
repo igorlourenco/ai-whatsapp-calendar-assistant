@@ -7,6 +7,7 @@ import { processInbox } from "./inbox";
 import { HELP_TEXT, executeActions, handleMessage, type AppCtx } from "./llm/execute";
 import { buildPrompt, extractActions, type Action } from "./llm/extract";
 import { loadState, saveState, type State } from "./llm/state";
+import { MediaTooLarge } from "./llm/vision";
 import { nextWakeUp, runDue } from "./notifications";
 import { memoryDb } from "./testing/sqlite";
 import { localDateTime, localToUtc } from "./time";
@@ -454,3 +455,54 @@ describe("images: preview first, save only on confirmation", () => {
   });
 });
 
+describe("voice notes: transcribed, then handled like typed text", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const env = { DEEPSEEK_API_KEY: "k" };
+  const seen: string[] = [];
+  const fakeModel = (out: object) =>
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: { content: string }[] };
+      seen.push(body.messages.at(-1)!.content);
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(out) } }] }));
+    });
+  const media = (heard: string) => ({
+    transcribe: async () => heard,
+    downloadAudio: async () => ({ bytes: new Uint8Array([1]), mime: "audio/ogg" }),
+  });
+  const voice = (id: string) => ({ text: "", mediaUrl: `https://zapi/${id}.ogg`, mediaMime: "audio/ogg; codecs=opus" });
+
+  it("echoes the transcript and saves like a typed message", async () => {
+    fakeModel({ actions: [{ type: "create", title: "Fonoaudióloga", date: "2026-11-20", start_time: "15:00" }] });
+    const r = await handleMessage({ ...ctx, sourceMessageId: "AUD-1" }, env, voice("a"), media("Marca fonoaudióloga sexta às 3 da tarde."));
+    expect(r).toMatch(/^🎤 _Marca fonoaudióloga sexta às 3 da tarde\._\n\n✅ \*Salvo na agenda\*/);
+    expect(seen.at(-1)).toContain("Marca fonoaudióloga sexta às 3 da tarde.");
+    expect(await byTitle("Fonoaudióloga")).toHaveLength(1);
+  });
+
+  it("a spoken delete still needs a delete word", async () => {
+    fakeModel({ actions: [{ type: "delete", search: "fonoaudióloga" }] });
+    const r = await handleMessage(ctx, env, voice("b"), media("Era a fonoaudióloga, não a dentista."));
+    expect(r).toContain("Nada foi apagado");
+    expect(await byTitle("Fonoaudióloga")).toHaveLength(1);
+  });
+
+  it("answers an image preview by voice", async () => {
+    fakeModel({ actions: [{ type: "create", title: "Prova Oral", date: "2026-12-10", start_time: "09:00" }, { type: "create", title: "Prova Escrita", date: "2026-12-11", start_time: "09:00" }] });
+    const img = { text: "", mediaUrl: "https://zapi/p.png", mediaMime: "image/png" };
+    await handleMessage({ ...ctx, sourceMessageId: "IMG-A" }, env, img, {
+      vision: async () => "PROVAS…",
+      download: async () => ({ bytes: new Uint8Array([1]), mime: "image/png" }),
+    });
+    const r = await handleMessage(ctx, env, voice("c"), media("Só a dois."));
+    expect(r).toContain("✅ *Salvo na agenda*");
+    expect(await byTitle("Prova Escrita")).toHaveLength(1);
+    expect(await byTitle("Prova Oral")).toHaveLength(0);
+  });
+
+  it("silence, oversized audio, and no transcriber", async () => {
+    expect(await handleMessage(ctx, env, voice("d"), media(""))).toBe("🤔 Não consegui entender o áudio. Pode repetir ou escrever?");
+    const big = { transcribe: async () => "x", downloadAudio: async () => Promise.reject(new MediaTooLarge("big")) };
+    expect(await handleMessage(ctx, env, voice("e"), big)).toMatch(/Áudio muito longo/);
+    expect(await handleMessage(ctx, env, voice("f"), {})).toMatch(/Áudio não está ativado/);
+  });
+});

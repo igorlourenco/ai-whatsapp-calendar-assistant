@@ -55,7 +55,7 @@ async function processOne(ctx: AppCtx, deps: InboxDeps, row: Row, now: () => num
               { ...ctx, sourceMessageId: row.messageId },
               { text: row.text.trim(), mediaUrl: row.mediaUrl, mediaMime: row.mediaMime },
             )
-          : "Por enquanto entendo texto e imagens 🙏 (áudio ainda não).";
+          : "Por enquanto entendo texto, áudio e imagens 🙏";
       await ctx.db.update(inboundMessages).set({ status: "answered", reply }).where(where);
     }
     await deps.send(row.phone, reply);
@@ -91,7 +91,8 @@ async function processOne(ctx: AppCtx, deps: InboxDeps, row: Row, now: () => num
 
 /** Tell the user exactly what did and didn't get saved. */
 export async function failureNotice(ctx: AppCtx, row: Row): Promise<string> {
-  const body = row.text || (row.mediaUrl ? "📷 imagem" : "");
+  const media = row.mediaMime?.startsWith("audio/") ? "🎤 áudio" : "📷 imagem";
+  const body = row.text || (row.mediaUrl ? media : "");
   const quoted = body.length > 160 ? `${body.slice(0, 160)}…` : body;
   const saved = await ctx.db
     .select({ label: messageEvents.label })

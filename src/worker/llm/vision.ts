@@ -49,14 +49,21 @@ export function normalizeTranscript(t: string): string {
   return !text || text.toUpperCase().includes(NO_TEXT) ? "" : text;
 }
 
+/** Media over the size cap: answered with a message, never retried. */
+export class MediaTooLarge extends Error {}
+
 /** Download a media URL (Z-API serves temporary public links). */
-export async function fetchImage(url: string): Promise<{ bytes: Uint8Array; mime: string }> {
+export async function fetchMedia(url: string, maxBytes: number): Promise<{ bytes: Uint8Array; mime: string }> {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`image download failed (${res.status})`);
+  if (!res.ok) throw new Error(`media download failed (${res.status})`);
   const len = Number(res.headers.get("content-length") ?? 0);
-  if (len > MAX_IMAGE_BYTES) throw new Error(`image too large (${len} bytes)`);
+  if (len > maxBytes) throw new MediaTooLarge(`media too large (${len} bytes)`);
   const bytes = new Uint8Array(await res.arrayBuffer());
-  if (bytes.length > MAX_IMAGE_BYTES) throw new Error(`image too large (${bytes.length} bytes)`);
-  const mime = (res.headers.get("content-type") ?? "image/jpeg").split(";")[0]!.trim();
+  if (bytes.length > maxBytes) throw new MediaTooLarge(`media too large (${bytes.length} bytes)`);
+  return { bytes, mime: (res.headers.get("content-type") ?? "").split(";")[0]!.trim() };
+}
+
+export async function fetchImage(url: string): Promise<{ bytes: Uint8Array; mime: string }> {
+  const { bytes, mime } = await fetchMedia(url, MAX_IMAGE_BYTES);
   return { bytes, mime: mime.startsWith("image/") ? mime : "image/jpeg" };
 }

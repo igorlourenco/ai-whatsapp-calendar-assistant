@@ -88,6 +88,7 @@ const SETTINGS: [key: keyof typeof DEFAULTS, help: string][] = [
   ["DEFAULT_REMINDER_MINUTES", "Default reminder before timed events (minutes)"],
   ["DEEPSEEK_MODEL", "DeepSeek model"],
   ["VISION_MODEL", "Workers AI model that reads images"],
+  ["TRANSCRIBE_MODEL", "Workers AI model that transcribes voice notes"],
   ["TASK_NAG_MINUTES", "Re-send pending tasks every N minutes on their due day"],
   ["TASK_NAG_UNTIL", "No task nags after this time (HH:mm)"],
 ];

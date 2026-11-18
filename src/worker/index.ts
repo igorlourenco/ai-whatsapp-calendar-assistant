@@ -23,10 +23,15 @@ app.post("/webhooks/zapi", async (c) => {
     messageId: body.messageId ?? `noid:${body.phone}:${body.momment ?? Date.now()}`,
     phone: body.phone,
     text: body.text?.message ?? body.image?.caption ?? body.document?.caption ?? "",
-    // Photos, and images sent "as document" (uncompressed). Other files
-    // (PDF…) are stored too so the bot can say it can't read them yet.
-    mediaUrl: body.image?.imageUrl ?? body.document?.documentUrl ?? null,
-    mediaMime: body.image ? (body.image.mimeType ?? "image/jpeg") : (body.document?.mimeType ?? null),
+    // Photos, voice notes, and files sent "as document" (uncompressed images,
+    // audio files). Other files (PDF…) are stored too so the bot can say it
+    // can't read them yet.
+    mediaUrl: body.image?.imageUrl ?? body.audio?.audioUrl ?? body.document?.documentUrl ?? null,
+    mediaMime: body.image
+      ? (body.image.mimeType ?? "image/jpeg")
+      : body.audio?.audioUrl
+        ? (body.audio.mimeType ?? "audio/ogg")
+        : (body.document?.mimeType ?? null),
   };
 
   // Durable inbox: the user's Durable Object stores the message (idempotent

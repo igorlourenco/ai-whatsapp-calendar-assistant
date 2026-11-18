@@ -13,6 +13,7 @@ import { buildFeed } from "./icloud/ics";
 import { categoryRows, exportAll, importAll, readOnlyQuery, snapshot, type CategoryConfig, type ExportData } from "./debug";
 import { OPEN_STATUSES, processInbox } from "./inbox";
 import { handleMessage, type AppCtx } from "./llm/execute";
+import { fetchAudio, workersAiWhisper } from "./llm/transcribe";
 import { fetchImage, workersAiVision } from "./llm/vision";
 import { nextWakeUp, runDue, type CronConfig } from "./notifications";
 import { addUser, findUser, findUserByToken, listUsers, loadProfile, removeUser, setupGuest, userSettings } from "./users";
@@ -134,11 +135,15 @@ export class Scheduler extends DurableObject<Env> {
 
     try {
       await processInbox(ctx, {
-        handle: (c, msg) =>
-          handleMessage(c, this.env, msg, {
-            vision: workersAiVision(this.env.AI, userSettings(this.env, p).visionModel),
+        handle: (c, msg) => {
+          const models = userSettings(this.env, p);
+          return handleMessage(c, this.env, msg, {
+            vision: workersAiVision(this.env.AI, models.visionModel),
             download: fetchImage,
-          }),
+            transcribe: workersAiWhisper(this.env.AI, models.transcribeModel),
+            downloadAudio: fetchAudio,
+          });
+        },
         send: (phone, msg) => sendText(this.env, phone, msg),
       });
     } catch (err) {

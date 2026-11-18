@@ -27,6 +27,7 @@ EVENING_DIGEST_TIME=21:00
 DEFAULT_REMINDER_MINUTES=30
 DEEPSEEK_MODEL=deepseek-flash
 VISION_MODEL=@cf/mistralai/mistral-small-3.1-24b-instruct
+TRANSCRIBE_MODEL=@cf/openai/whisper-large-v3-turbo
 TASK_NAG_MINUTES=30
 TASK_NAG_UNTIL=22:00
 

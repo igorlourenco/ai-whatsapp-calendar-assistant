@@ -8,7 +8,7 @@
   // Reminders + digests are timed by the Scheduler DO alarm (src/worker/scheduler.ts).
   // This daily cron is only a watchdog that arms the alarm if none is pending.
   "triggers": { "crons": ["0 6 * * *"] },
-  // Workers AI: reads images (VISION_MODEL). Included in the free plan's daily allowance.
+  // Workers AI: reads images (VISION_MODEL), transcribes voice notes (TRANSCRIBE_MODEL). Included in the free plan's daily allowance.
   "ai": { "binding": "AI", "remote": true },
   "durable_objects": {
     "bindings": [{ "name": "SCHEDULER", "class_name": "Scheduler" }]

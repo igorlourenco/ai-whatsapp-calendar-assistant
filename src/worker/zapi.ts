@@ -21,7 +21,8 @@ export type ZapiReceived = {
   momment?: number;
   senderName?: string;
   text?: { message?: string };
-  audio?: unknown;
+  /** Voice notes (ptt) and audio files; WhatsApp records Ogg/Opus. */
+  audio?: { audioUrl?: string; mimeType?: string; seconds?: number; ptt?: boolean };
   image?: { caption?: string; imageUrl?: string; mimeType?: string };
   document?: { caption?: string; documentUrl?: string; mimeType?: string; fileName?: string };
 };
