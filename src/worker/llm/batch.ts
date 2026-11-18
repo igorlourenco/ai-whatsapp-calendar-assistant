@@ -70,6 +70,14 @@ const norm = (s: string) =>
 const YES = /^(sim|s|ss|si|yes|y|ok|okay|pode|pode salvar|pode sim|salva|salvar|salva tudo|salva todos|salvar tudo|confirmo|confirma|confirmado|isso|isso mesmo|todos|todas|tudo|todos eles|bora|manda|beleza|blz|fechado|perfeito|certo|correto|show)$/;
 const NO = /^(nao|n|nope|no|cancela|cancelar|nenhum|nenhuma|deixa|deixa pra la|esquece|descarta|descartar|nao salva|nao precisa)$/;
 
+/** Spoken numbers, as voice-note transcripts often write them. */
+const NUMBER_WORDS: Record<string, string> = {
+  um: "1", uma: "1", dois: "2", duas: "2", tres: "3", quatro: "4", cinco: "5",
+  seis: "6", sete: "7", oito: "8", nove: "9", dez: "10",
+};
+const spokenNumbers = (s: string) =>
+  s.replace(/\b(um|uma|dois|duas|tres|quatro|cinco|seis|sete|oito|nove|dez)\b/g, (w) => NUMBER_WORDS[w]!);
+
 function numbers(s: string, max: number): number[] | null {
   const cleaned = s.replace(/\b(?:o|a|os|as|numero|numeros|item|itens)\b/g, " ");
   const parts = cleaned.split(/\s*(?:,|;|\be\b|\s)\s*/).filter(Boolean);
@@ -83,10 +91,15 @@ function numbers(s: string, max: number): number[] | null {
  * (then it's handled as a normal message and the batch keeps waiting).
  */
 export function parseBatchReply(text: string, count: number): BatchAnswer | null {
-  const t = norm(text);
+  const t = spokenNumbers(norm(text));
   if (!t) return null;
-  if (YES.test(t)) return { kind: "all" };
-  if (NO.test(t)) return { kind: "none" };
+  // "Sim, pode salvar." (commas only matter between numbers: "1,3")
+  const words = t.replace(/,/g, " ").replace(/\s+/g, " ").trim();
+  // "sim, pode salvar" / "não, descarta": a lead word that agrees with the rest.
+  const yes = (w: string) => YES.test(w) || (/^sim /.test(w) && YES.test(w.slice(4)));
+  const no = (w: string) => NO.test(w) || (/^nao /.test(w) && NO.test(w.slice(4)));
+  if (yes(words)) return { kind: "all" };
+  if (no(words)) return { kind: "none" };
 
   // "todos menos 2", "tudo exceto 1 e 3", "menos o 2"
   const except = /^(?:(?:salva\s+)?(?:todos|todas|tudo)\s+)?(?:menos|exceto|tirando|sem)\s+(?:[oa]s?\s+)?(.+)$/.exec(t);
