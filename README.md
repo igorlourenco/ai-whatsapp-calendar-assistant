@@ -33,6 +33,7 @@ bot:  🗓️ Terça, 17 de novembro
 - **Tasks (to-dos) that nag until done.** "me lembra de pagar o boleto sexta", "ligar pro banco amanhã 10h", "pagar aluguel todo dia 5". Every task has a day (no date → "pra quando?"). From its time (or 30 min after the morning digest, for date-only tasks) you get a WhatsApp message every 30 min listing what's still pending, until you answer `feito`. Overdue tasks keep nagging the next days; nothing is sent after 22:00. `tarefas` lists them, `feito 2` / `feito todas` / `paguei o boleto` checks off (a repeating one moves to its next date), `adia o banco pra sexta` reschedules.
 - **Shopping list.** "compra leite, ovos e pão", "acabou o café" → one list, no dates, no nags. `lista` shows it, `comprei o leite` / `comprei tudo` checks off, `tira o café da lista` removes. A purchase with a date ("comprar presente da Ana até sexta") or "me lembra de…" stays a task.
 - **Friends can use it too.** Anyone who sends the invite code (`INVITE_CODE`) to the bot's number joins with their own agenda, tasks, shopping list, digests and reminders, fully separate from yours. Their events live in the bot and show up on their phone through a read-only calendar link (iPhone: tap → *Assinar*; Google Calendar: *Add calendar → From URL*). `resumo às 8h`, `lembrete padrão 1h antes`, `moro em Lisboa` change their own settings; `link da agenda` re-sends the link.
+- **…or with their own iCloud, two-way.** `pnpm connect-icloud` (you, from the terminal, with their Apple ID and an app-specific password) connects someone's iCloud just like yours: what the bot saves shows up in their Apple Calendar and what they add there, the bot sees. The password goes from your terminal to the worker over HTTPS, is stored AES-GCM-encrypted (`CREDENTIALS_KEY`), and never passes through WhatsApp or the model. No invite code needed; events they already had in the bot are moved into their iCloud.
 - **Photos and screenshots.** Send an exam schedule, an event flyer, a chat screenshot or a photo of a note: the bot reads it and replies with a numbered preview (`📷 Encontrei 4 eventos… Salvo? sim / não / 1,3`). Nothing from an image is saved until you confirm.
 - **Follow-ups without a chat log.** "marca oftalmo" → "❓ qual dia?" → "dia 10 às 15h". "muda pra 16h" / "apaga esse" right after saving. "Achei 2… qual?" → "o 2".
 - **Daily digests** (morning agenda + tasks, evening preview) and **event reminders** both as native iPhone alerts and WhatsApp messages.
@@ -54,7 +55,8 @@ WhatsApp ─▶ Z-API ─▶ POST /webhooks/zapi?token=…  (OWNER_PHONE + users
              └─ one alarm: next reminder / digest / pending message
                          │
                          ▼
-          owner: iCloud CalDAV (events)   ·   others: events in their DO, served at GET /cal/<token>.ics
+          owner: iCloud (ICLOUD_*)  ·  connected users: their own iCloud (encrypted in their DO)
+          others: events in their DO, served read-only at GET /cal/<token>.ics
           + DO SQLite (tasks, shopping list, inbox, state, send logs, categories, settings)
 ```
 
@@ -121,6 +123,7 @@ Set in `.dev.vars`, uploaded by `pnpm configure` (defaults in `src/worker/config
 | `VISION_MODEL` | `@cf/mistralai/mistral-small-3.1-24b-instruct` | Workers AI model that reads images |
 | `TASK_NAG_MINUTES` | `30` | Pending tasks are re-sent every N minutes (min 5) |
 | `TASK_NAG_UNTIL` | `22:00` | No task nags after this time; they resume after the morning digest |
+| `CREDENTIALS_KEY` | *(generated)* | 32 bytes base64. Encrypts users' iCloud passwords. Never change it after connecting someone (they'd need `pnpm connect-icloud` again) |
 | `INVITE_CODE` | *(empty)* | Letters/digits, 4+ chars. Whoever sends it to the bot joins as a user. Empty = only you. Change it to stop new sign-ups (existing users stay) |
 
 Everyone starts with these settings (and Pessoal/Trabalho/Estudos categories) and can change their own by message: `resumo às 8h`, `prévia às 22h`, `lembrete padrão 15 min antes`, `meu fuso é Lisboa`, `minhas configurações`.
@@ -137,7 +140,8 @@ pnpm db "select * from inbound_messages order by received_at desc limit 5"
 pnpm db export > backup.json                   # full JSON dump
 pnpm db import backup.json                     # insert-only: never overwrites or deletes
 pnpm db restore 2026-11-16T12:00:00Z --yes     # point-in-time restore (≤ 30 days back)
-pnpm db users                                  # who joined with the invite code
+pnpm db users                                  # who joined (invite code or connect-icloud)
+pnpm connect-icloud                            # connect someone's own iCloud (two-way); re-run to change password/calendars
 DB_USER=5511987654321 pnpm db state            # any command above, on another user's object
 curl -X DELETE -H "Authorization: Bearer $DEBUG_TOKEN" $WORKER_URL/debug/users/5511987654321   # revoke
 ```
@@ -167,6 +171,8 @@ Map of the code:
 | `src/worker/index.ts` | Webhook, `/debug/*`, daily watchdog cron |
 | `src/worker/scheduler.ts` | The Durable Object (one per user, plus "registry"): SQLite + migrations, inbox, alarm, join, ICS feed, ops |
 | `src/worker/users.ts` | Multi-user: registry, invite code, per-user profile and settings |
+| `src/worker/secrets.ts` | AES-GCM for per-user iCloud credentials |
+| `scripts/connect-icloud.ts` | Terminal flow to connect someone's iCloud (validates login, picks calendars) |
 | `src/worker/llm/extract.ts` | Prompt + action schema (the only thing the model does) |
 | `src/worker/llm/execute.ts` | Runs actions, resolves which event you mean, builds replies |
 | `src/worker/llm/confirm.ts` | Confirmations re-read from the store |
@@ -191,7 +197,7 @@ Map of the code:
 
 - Brazilian Portuguese only.
 - WhatsApp via Z-API only (not the official WhatsApp Cloud API).
-- Only the owner's events sync both ways (iCloud). Guests see their agenda read-only in their calendar app (changes go through WhatsApp); no Google Calendar write access.
+- Two-way sync only with iCloud (yours, or users connected with `pnpm connect-icloud`). Invite-code guests see their agenda read-only in their calendar app (changes go through WhatsApp); no Google Calendar write access.
 - Tasks live in the bot, not in Apple's Reminders app: since the iOS 13 Reminders upgrade, iCloud no longer exposes reminders over CalDAV, and there's no public API for them.
 - Guests all share the bot's WhatsApp number and your DeepSeek/Z-API quota.
 
