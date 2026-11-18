@@ -89,7 +89,7 @@ const SETTINGS: [key: keyof typeof DEFAULTS, help: string][] = [
   ["DEEPSEEK_MODEL", "DeepSeek model"],
   ["VISION_MODEL", "Workers AI model that reads images"],
   ["TRANSCRIBE_MODEL", "Workers AI model that transcribes voice notes"],
-  ["TASK_NAG_MINUTES", "Re-send pending tasks every N minutes on their due day"],
+  ["TASK_NAG_MINUTES", "Re-send pending tasks every N minutes on their due day (0 = off)"],
   ["TASK_NAG_UNTIL", "No task nags after this time (HH:mm)"],
 ];
 // INVITE_CODE is optional (unset = only the owner); JSON.stringify drops it then.

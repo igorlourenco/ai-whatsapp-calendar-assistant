@@ -1,6 +1,6 @@
 # WhatsApp Calendar Assistant
 
-Manage your **Apple Calendar** and your **to-dos** by texting yourself on **WhatsApp**. Write like you'd write to a friend, and the assistant saves, moves, cancels and lists events in your iCloud calendars, keeps a to-do list that nags you until you say it's done, and every morning sends you the day's agenda.
+Manage your **Apple Calendar** and your **to-dos** by texting yourself on **WhatsApp**. Write like you'd write to a friend, and the assistant saves, moves, cancels and lists events in your iCloud calendars, keeps a to-do list (that can nag you until you say it's done), and every morning sends you the day's agenda.
 
 > The assistant talks **Brazilian Portuguese** (prompts, replies and digests). Code and docs are in English.
 
@@ -30,7 +30,7 @@ bot:  🗓️ Terça, 17 de novembro
 - **Natural language → calendar.** One-off, all-day, multi-day ("de 20 a 23") and recurring events, edits, cancellations (whole series or a single day), queries ("o que tenho sábado?", "semana que vem").
 - **Your Apple Calendar is the source of truth.** Events are read and written directly in iCloud over CalDAV, so they show up on your iPhone, Mac and Watch. Events you create on the iPhone show up in queries and digests too.
 - **Categories = iCloud calendars** (e.g. Work 💼, School 🎓, Personal 🏠), each with an emoji and a description the AI uses to pick one.
-- **Tasks (to-dos) that nag until done.** "me lembra de pagar o boleto sexta", "ligar pro banco amanhã 10h", "pagar aluguel todo dia 5". Every task has a day (no date → "pra quando?"). From its time (or 30 min after the morning digest, for date-only tasks) you get a WhatsApp message every 30 min listing what's still pending, until you answer `feito`. Overdue tasks keep nagging the next days; nothing is sent after 22:00. `tarefas` lists them, `feito 2` / `feito todas` / `paguei o boleto` checks off (a repeating one moves to its next date), `adia o banco pra sexta` reschedules.
+- **Tasks (to-dos) that nag until done.** "me lembra de pagar o boleto sexta", "ligar pro banco amanhã 10h", "pagar aluguel todo dia 5". Every task has a day (no date → "pra quando?"). Tasks show up in the morning digest. Nagging is **off by default**: `me cobra das tarefas a cada 30 min` turns it on (any interval, min 5 min), `para de me cobrar` turns it off. When on, from its time (or one interval after the morning digest, for date-only tasks) you get a WhatsApp message every N min listing what's still pending, until you answer `feito`. Overdue tasks keep nagging the next days; nothing is sent after 22:00. `tarefas` lists them, `feito 2` / `feito todas` / `paguei o boleto` checks off (a repeating one moves to its next date), `adia o banco pra sexta` reschedules.
 - **Shopping list.** "compra leite, ovos e pão", "acabou o café" → one list, no dates, no nags. `lista` shows it, `comprei o leite` / `comprei tudo` checks off, `tira o café da lista` removes. A purchase with a date ("comprar presente da Ana até sexta") or "me lembra de…" stays a task.
 - **Friends can use it too.** Anyone who sends the invite code (`INVITE_CODE`) to the bot's number joins with their own agenda, tasks, shopping list, digests and reminders, fully separate from yours. Their events live in the bot and show up on their phone through a read-only calendar link (iPhone: tap → *Assinar*; Google Calendar: *Add calendar → From URL*). `resumo às 8h`, `lembrete padrão 1h antes`, `moro em Lisboa` change their own settings; `link da agenda` re-sends the link.
 - **…or with their own iCloud, two-way.** `pnpm connect-icloud` (you, from the terminal, with their Apple ID and an app-specific password) connects someone's iCloud just like yours: what the bot saves shows up in their Apple Calendar and what they add there, the bot sees. The password goes from your terminal to the worker over HTTPS, is stored AES-GCM-encrypted (`CREDENTIALS_KEY`), and never passes through WhatsApp or the model. No invite code needed; events they already had in the bot are moved into their iCloud.
@@ -125,12 +125,12 @@ Set in `.dev.vars`, uploaded by `pnpm configure` (defaults in `src/worker/config
 | `DEEPSEEK_MODEL` | `deepseek-flash` | |
 | `VISION_MODEL` | `@cf/mistralai/mistral-small-3.1-24b-instruct` | Workers AI model that reads images |
 | `TRANSCRIBE_MODEL` | `@cf/openai/whisper-large-v3-turbo` | Workers AI model that transcribes voice notes (Ogg/Opus, up to ~2 MB) |
-| `TASK_NAG_MINUTES` | `30` | Pending tasks are re-sent every N minutes (min 5) |
+| `TASK_NAG_MINUTES` | `0` | Pending tasks are re-sent every N minutes (min 5); `0` = off. Each user can override it by message |
 | `TASK_NAG_UNTIL` | `22:00` | No task nags after this time; they resume after the morning digest |
 | `CREDENTIALS_KEY` | *(generated)* | 32 bytes base64. Encrypts users' iCloud passwords. Never change it after connecting someone (they'd need `pnpm connect-icloud` again) |
 | `INVITE_CODE` | *(empty)* | Letters/digits, 4+ chars. Whoever sends it to the bot joins as a user. Empty = only you. Change it to stop new sign-ups (existing users stay) |
 
-Everyone starts with these settings (and Pessoal/Trabalho/Estudos categories) and can change their own by message: `resumo às 8h`, `prévia às 22h`, `lembrete padrão 15 min antes`, `meu fuso é Lisboa`, `minhas configurações`.
+Everyone starts with these settings (and Pessoal/Trabalho/Estudos categories) and can change their own by message: `resumo às 8h`, `prévia às 22h`, `lembrete padrão 15 min antes`, `me cobra das tarefas a cada 20 min` / `para de me cobrar`, `meu fuso é Lisboa`, `minhas configurações`.
 
 Settings are deliberately not in `wrangler.jsonc`, so pulling updates never overwrites your configuration.
 
