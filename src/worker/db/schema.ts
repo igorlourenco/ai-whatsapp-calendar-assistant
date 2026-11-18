@@ -246,6 +246,7 @@ export const events = sqliteTable(
  */
 export const profile = sqliteTable("profile", {
   id: integer("id").primaryKey().default(1),
+  /** Where WhatsApp messages go, as WhatsApp reports it (not canonPhone). */
   phone: text("phone"),
   name: text("name"),
   storage: text("storage").$type<"icloud" | "local">().notNull().default("icloud"),

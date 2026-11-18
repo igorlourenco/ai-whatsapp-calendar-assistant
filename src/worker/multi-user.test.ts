@@ -55,7 +55,7 @@ describe("guest profile and settings", () => {
     await setupGuest(db, "5563991047668", "Ana", "webcal://x/cal/1.ics");
     await setupGuest(db, "5563991047668", "Ana", "webcal://x/cal/2.ics");
     const p = await loadProfile(db);
-    expect(p).toMatchObject({ phone: "556391047668", storage: "local", feedUrl: "webcal://x/cal/2.ics" });
+    expect(p).toMatchObject({ phone: "5563991047668", storage: "local", feedUrl: "webcal://x/cal/2.ics" });
     const store = sqliteStore(db, TZ, 30);
     expect((await store.listCategories()).map((c) => c.slug)).toEqual(["estudos", "pessoal", "trabalho"]);
   });

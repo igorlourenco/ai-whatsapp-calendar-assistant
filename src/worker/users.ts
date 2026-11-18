@@ -5,7 +5,7 @@ import { GUEST_CATEGORIES } from "./calendar/sqlite-store";
 import { settings, type Settings } from "./config";
 import type { Db } from "./db/client";
 import { categories, profile, users, type Profile, type User } from "./db/schema";
-import { canonPhone } from "./zapi";
+import { canonPhone, digits } from "./zapi";
 
 /*
  * Multi-user: every person has their own Durable Object (own SQLite, alarm,
@@ -71,7 +71,7 @@ export async function updateProfile(db: Db, patch: ProfilePatch): Promise<Profil
 export async function setupGuest(db: Db, phone: string, name: string | null, feedUrl: string): Promise<void> {
   await db
     .insert(profile)
-    .values({ id: 1, phone: canonPhone(phone), name, storage: "local", feedUrl })
+    .values({ id: 1, phone: digits(phone), name, storage: "local", feedUrl })
     .onConflictDoUpdate({ target: profile.id, set: { feedUrl } });
   if ((await db.select().from(categories).limit(1)).length) return;
   await db.insert(categories).values(

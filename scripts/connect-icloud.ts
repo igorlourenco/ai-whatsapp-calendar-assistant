@@ -13,7 +13,7 @@
 import { createInterface } from "node:readline/promises";
 
 import { calendarHome, listCalendars } from "../src/worker/icloud/caldav";
-import { canonPhone } from "../src/worker/zapi";
+import { digits } from "../src/worker/zapi";
 import { chooseCalendars } from "./lib/calendars";
 
 const url = process.env.WORKER_URL;
@@ -47,7 +47,8 @@ async function secret(q: string): Promise<string> {
 }
 
 console.log("\n\x1b[1mConnect someone's iCloud\x1b[0m");
-const phone = canonPhone(await ask("Their WhatsApp number (with country code)"));
+// Exactly as typed (BR mobiles WITH the 9): it is where WhatsApp messages go.
+const phone = digits(await ask("Their WhatsApp number (with country code)"));
 if (phone.length < 10) die("That doesn't look like a phone number.");
 const name = await ask("Their name", "");
 const username = await ask("Apple ID (email)");

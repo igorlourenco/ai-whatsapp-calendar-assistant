@@ -20,7 +20,7 @@ import { addUser, findUser, findUserByToken, listUsers, loadProfile, removeUser,
 import { calendarHome } from "./icloud/caldav";
 import { seal } from "./secrets";
 import { localDate, localDateTime } from "./time";
-import { canonPhone, samePhone, sendText } from "./zapi";
+import { canonPhone, digits, samePhone, sendText } from "./zapi";
 
 /** Never sleep longer than this, so a missed reschedule self-heals. */
 const MAX_SLEEP_MS = 12 * 60 * 60_000;
@@ -85,6 +85,11 @@ export class Scheduler extends DurableObject<Env> {
 
   /** Store a WhatsApp message (idempotent on messageId) and process ASAP. */
   async enqueue(m: Inbound): Promise<void> {
+    // Reminders/digests go to the number exactly as WhatsApp reports it.
+    const p = await this.profile();
+    if (p?.phone && p.phone !== digits(m.phone)) {
+      await this.db.update(schema.profile).set({ phone: digits(m.phone) });
+    }
     await this.db
       .insert(inboundMessages)
       .values({
@@ -222,7 +227,8 @@ export class Scheduler extends DurableObject<Env> {
     const before = await this.profile();
     const local = before?.storage === "local" ? await sqliteStore(this.sqlDb, userSettings(this.env, before).tz, 30).allRows() : [];
     const oldCats = await this.db.select().from(schema.categories);
-    const values = { phone: canonPhone(m.phone), name: m.name ?? before?.name ?? null, storage: "icloud" as const, icloudCredentials: sealed };
+    // Send address as given (not canonPhone: WhatsApp may need the BR 9th digit).
+    const values = { phone: digits(m.phone), name: m.name ?? before?.name ?? null, storage: "icloud" as const, icloudCredentials: sealed };
     this.ctx.storage.transactionSync(() => {
       this.db.insert(schema.profile).values({ id: 1, ...values }).onConflictDoUpdate({ target: schema.profile.id, set: values }).run();
       this.db.delete(schema.categories).run();
@@ -251,7 +257,7 @@ export class Scheduler extends DurableObject<Env> {
     }
     if (local.length) await this.db.delete(schema.events);
 
-    if (!before || before.storage === "local") {
+    if (!before || before.storage === "local" || before.phone !== values.phone) {
       const first = m.name?.split(" ")[0];
       await this.db
         .insert(inboundMessages)
