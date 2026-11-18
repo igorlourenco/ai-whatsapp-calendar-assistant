@@ -11,7 +11,7 @@ export type Settings = {
   visionModel: string;
   /** Workers AI model that transcribes voice notes. */
   transcribeModel: string;
-  /** Pending tasks are re-sent every N minutes on/after their due date. */
+  /** Pending tasks are re-sent every N minutes on/after their due date (0 = off). */
   taskNagMinutes: number;
   /** No task nags after this local time (they resume at the morning digest). */
   taskNagUntil: string;
@@ -27,7 +27,8 @@ export const DEFAULTS = {
   VISION_MODEL: "@cf/mistralai/mistral-small-3.1-24b-instruct",
   /** Workers AI speech-to-text for voice notes (reads WhatsApp's Ogg/Opus). */
   TRANSCRIBE_MODEL: "@cf/openai/whisper-large-v3-turbo",
-  TASK_NAG_MINUTES: "30",
+  /** Off by default; each user turns it on by message ("me cobra a cada 30 min"). */
+  TASK_NAG_MINUTES: "0",
   TASK_NAG_UNTIL: "22:00",
 } as const;
 
@@ -55,6 +56,16 @@ function validTz(tz: string | undefined): string {
   }
 }
 
+/** Minimum task nag interval; anything lower (but > 0) is raised to it. */
+export const MIN_NAG_MINUTES = 5;
+
+/** 0 = off; otherwise at least MIN_NAG_MINUTES. Invalid → default (off). */
+export function nagMinutes(v: string | number | null | undefined): number {
+  const n = Number(v);
+  if (v == null || v === "" || !Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(Math.round(n), MIN_NAG_MINUTES);
+}
+
 export function settings(env: SettingsEnv): Settings {
   const reminder = Number(env.DEFAULT_REMINDER_MINUTES);
   return {
@@ -64,7 +75,7 @@ export function settings(env: SettingsEnv): Settings {
     defaultReminder: Number.isFinite(reminder) && reminder >= 0 ? reminder : Number(DEFAULTS.DEFAULT_REMINDER_MINUTES),
     visionModel: env.VISION_MODEL || DEFAULTS.VISION_MODEL,
     transcribeModel: env.TRANSCRIBE_MODEL || DEFAULTS.TRANSCRIBE_MODEL,
-    taskNagMinutes: Number(env.TASK_NAG_MINUTES) >= 5 ? Number(env.TASK_NAG_MINUTES) : Number(DEFAULTS.TASK_NAG_MINUTES),
+    taskNagMinutes: nagMinutes(env.TASK_NAG_MINUTES),
     taskNagUntil: hhmm(env.TASK_NAG_UNTIL, DEFAULTS.TASK_NAG_UNTIL),
   };
 }

@@ -156,10 +156,10 @@ export async function searchTasks(db: Db, search: string): Promise<Task[]> {
  * From its due moment on, a task is re-sent every `every` minutes until it's
  * marked done (or moved to another day). Due moment = its time, or for a
  * date-only task one interval after the morning digest (which already lists
- * it). No nags after `until`; they resume the next morning. Overdue tasks
+ * it). `every` 0 = never nag. No nags after `until`; they resume the next morning. Overdue tasks
  * keep being nagged every day.
  */
-export type NagCfg = { morningAt: string; every: number; until: string };
+export type NagCfg = { morningAt: string; /** 0 = nags off */ every: number; until: string };
 
 const plusMinutes = (hhmm: string, m: number) => {
   const [h, mm] = hhmm.split(":").map(Number) as [number, number];
@@ -178,7 +178,7 @@ function nagWindow(t: Task, day: string, cfg: NagCfg, tz: string): [Date, Date] 
 
 /** When this task should be nagged next (≤ now means "now"); null if never. */
 export function nextNagAt(t: Task, cfg: NagCfg, tz: string, now: Date): Date | null {
-  if (t.status !== "open" || !t.dueDate) return null;
+  if (cfg.every <= 0 || t.status !== "open" || !t.dueDate) return null;
   const today = localDate(now, tz);
   let day = t.dueDate > today ? t.dueDate : today;
   for (let i = 0; i < 3; i++, day = addDays(day, 1)) {
@@ -192,7 +192,7 @@ export function nextNagAt(t: Task, cfg: NagCfg, tz: string, now: Date): Date | n
 
 /** Inside its nag window right now (so it rides along in the current nag). */
 export function inNagPhase(t: Task, cfg: NagCfg, tz: string, now: Date): boolean {
-  if (t.status !== "open" || !t.dueDate) return false;
+  if (cfg.every <= 0 || t.status !== "open" || !t.dueDate) return false;
   const today = localDate(now, tz);
   if (t.dueDate > today) return false;
   const [start, end] = nagWindow(t, today, cfg, tz);

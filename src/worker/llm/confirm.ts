@@ -47,7 +47,7 @@ export async function renderConfirmations(ctx: AppCtx, writes: WriteRecord[]): P
         continue;
       }
       const head = { created: "📝 *Tarefa anotada*", updated: "✏️ *Tarefa atualizada*", exists: "ℹ️ *Já estava na lista*" }[w.action];
-      blocks.push(`${head}\n${describeTask(t, ctx.taskNagMinutes ?? 30)}`);
+      blocks.push(`${head}\n${describeTask(t, ctx.taskNagMinutes ?? 0)}`);
     } else if (w.kind === "task_deleted") {
       blocks.push(`🗑️ *Tarefa apagada:* ${w.title}`);
     } else {
@@ -86,7 +86,7 @@ function describeTask(t: Task, every: number): string {
   const lines = [`*${t.title}*`];
   if (t.dueDate) {
     lines.push(`🗓️ ${humanDatePt(t.dueDate)}${t.dueTime ? ` · ${t.dueTime}` : ""}`);
-    lines.push(`⏰ te cobro a cada ${every} min${t.dueTime ? ` a partir das ${t.dueTime}` : ""} até você dizer *feito*`);
+    if (every > 0) lines.push(`⏰ te cobro a cada ${every} min${t.dueTime ? ` a partir das ${t.dueTime}` : ""} até você dizer *feito*`);
   }
   if (t.recurrence && t.dueDate) lines.push(`🔁 ${describeRecurrence(t.recurrence, t.dueDate)}`);
   if (t.notes) lines.push(`📝 ${t.notes}`);

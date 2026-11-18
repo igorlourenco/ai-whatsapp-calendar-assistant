@@ -1,0 +1,1 @@
+ALTER TABLE `profile` ADD `task_nag_minutes` integer;

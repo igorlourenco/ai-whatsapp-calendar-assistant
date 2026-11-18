@@ -18,7 +18,7 @@ export type CronConfig = { morningAt: string; eveningAt: string; taskNagMinutes?
 
 const nagCfg = (cfg: CronConfig): NagCfg => ({
   morningAt: cfg.morningAt,
-  every: cfg.taskNagMinutes ?? 30,
+  every: cfg.taskNagMinutes ?? 0,
   until: cfg.taskNagUntil ?? "22:00",
 });
 

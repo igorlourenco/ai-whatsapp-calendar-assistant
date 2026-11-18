@@ -254,6 +254,8 @@ export const profile = sqliteTable("profile", {
   morningAt: text("morning_at"),
   eveningAt: text("evening_at"),
   defaultReminder: integer("default_reminder"),
+  /** Minutes between task nags; 0 = off, null = deployment default. */
+  taskNagMinutes: integer("task_nag_minutes"),
   /** webcal:// link of this user's ICS feed (storage "local" only). */
   feedUrl: text("feed_url"),
   /**
