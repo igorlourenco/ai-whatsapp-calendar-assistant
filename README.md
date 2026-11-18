@@ -32,6 +32,7 @@ bot:  🗓️ Terça, 17 de novembro
 - **Categories = iCloud calendars** (e.g. Work 💼, School 🎓, Personal 🏠), each with an emoji and a description the AI uses to pick one.
 - **Tasks (to-dos) that nag until done.** "me lembra de pagar o boleto sexta", "ligar pro banco amanhã 10h", "pagar aluguel todo dia 5". Every task has a day (no date → "pra quando?"). From its time (or 30 min after the morning digest, for date-only tasks) you get a WhatsApp message every 30 min listing what's still pending, until you answer `feito`. Overdue tasks keep nagging the next days; nothing is sent after 22:00. `tarefas` lists them, `feito 2` / `feito todas` / `paguei o boleto` checks off (a repeating one moves to its next date), `adia o banco pra sexta` reschedules.
 - **Shopping list.** "compra leite, ovos e pão", "acabou o café" → one list, no dates, no nags. `lista` shows it, `comprei o leite` / `comprei tudo` checks off, `tira o café da lista` removes. A purchase with a date ("comprar presente da Ana até sexta") or "me lembra de…" stays a task.
+- **Friends can use it too.** Anyone who sends the invite code (`INVITE_CODE`) to the bot's number joins with their own agenda, tasks, shopping list, digests and reminders, fully separate from yours. Their events live in the bot and show up on their phone through a read-only calendar link (iPhone: tap → *Assinar*; Google Calendar: *Add calendar → From URL*). `resumo às 8h`, `lembrete padrão 1h antes`, `moro em Lisboa` change their own settings; `link da agenda` re-sends the link.
 - **Photos and screenshots.** Send an exam schedule, an event flyer, a chat screenshot or a photo of a note: the bot reads it and replies with a numbered preview (`📷 Encontrei 4 eventos… Salvo? sim / não / 1,3`). Nothing from an image is saved until you confirm.
 - **Follow-ups without a chat log.** "marca oftalmo" → "❓ qual dia?" → "dia 10 às 15h". "muda pra 16h" / "apaga esse" right after saving. "Achei 2… qual?" → "o 2".
 - **Daily digests** (morning agenda + tasks, evening preview) and **event reminders** both as native iPhone alerts and WhatsApp messages.
@@ -40,10 +41,10 @@ bot:  🗓️ Terça, 17 de novembro
 ## How it works
 
 ```
-WhatsApp ─▶ Z-API ─▶ POST /webhooks/zapi?token=…  (only OWNER_PHONE is served)
-                         │
+WhatsApp ─▶ Z-API ─▶ POST /webhooks/zapi?token=…  (OWNER_PHONE + users who sent INVITE_CODE)
+                         │      "registry" object: who joined + their calendar-feed tokens
                          ▼
-          Scheduler Durable Object (single instance, embedded SQLite)
+          Scheduler Durable Object, one per person (embedded SQLite)
              │  durable inbox: in order, retries, explicit failure notice
              ├─ images: Workers AI vision transcribes → same extractor → preview
              ├─ DeepSeek: one JSON-mode call per message → typed actions (zod)
@@ -53,10 +54,11 @@ WhatsApp ─▶ Z-API ─▶ POST /webhooks/zapi?token=…  (only OWNER_PHONE is
              └─ one alarm: next reminder / digest / pending message
                          │
                          ▼
-          iCloud CalDAV (events)  +  DO SQLite (tasks, shopping list, inbox, state, send logs, category map)
+          owner: iCloud CalDAV (events)   ·   others: events in their DO, served at GET /cal/<token>.ics
+          + DO SQLite (tasks, shopping list, inbox, state, send logs, categories, settings)
 ```
 
-Everything runs on **one Cloudflare Worker** with one Durable Object. No database to provision.
+Everything runs on **one Cloudflare Worker** with one Durable Object per person. No database to provision.
 
 ## Requirements
 
@@ -119,6 +121,9 @@ Set in `.dev.vars`, uploaded by `pnpm configure` (defaults in `src/worker/config
 | `VISION_MODEL` | `@cf/mistralai/mistral-small-3.1-24b-instruct` | Workers AI model that reads images |
 | `TASK_NAG_MINUTES` | `30` | Pending tasks are re-sent every N minutes (min 5) |
 | `TASK_NAG_UNTIL` | `22:00` | No task nags after this time; they resume after the morning digest |
+| `INVITE_CODE` | *(empty)* | Letters/digits, 4+ chars. Whoever sends it to the bot joins as a user. Empty = only you. Change it to stop new sign-ups (existing users stay) |
+
+Everyone starts with these settings (and Pessoal/Trabalho/Estudos categories) and can change their own by message: `resumo às 8h`, `prévia às 22h`, `lembrete padrão 15 min antes`, `meu fuso é Lisboa`, `minhas configurações`.
 
 Settings are deliberately not in `wrangler.jsonc`, so pulling updates never overwrites your configuration.
 
@@ -132,6 +137,9 @@ pnpm db "select * from inbound_messages order by received_at desc limit 5"
 pnpm db export > backup.json                   # full JSON dump
 pnpm db import backup.json                     # insert-only: never overwrites or deletes
 pnpm db restore 2026-11-16T12:00:00Z --yes     # point-in-time restore (≤ 30 days back)
+pnpm db users                                  # who joined with the invite code
+DB_USER=5511987654321 pnpm db state            # any command above, on another user's object
+curl -X DELETE -H "Authorization: Bearer $DEBUG_TOKEN" $WORKER_URL/debug/users/5511987654321   # revoke
 ```
 
 SQL is **read-only**: a single statement, run inside a transaction that is always rolled back.
@@ -157,7 +165,8 @@ Map of the code:
 | Path | |
 |---|---|
 | `src/worker/index.ts` | Webhook, `/debug/*`, daily watchdog cron |
-| `src/worker/scheduler.ts` | The Durable Object: SQLite + migrations, inbox, alarm, ops |
+| `src/worker/scheduler.ts` | The Durable Object (one per user, plus "registry"): SQLite + migrations, inbox, alarm, join, ICS feed, ops |
+| `src/worker/users.ts` | Multi-user: registry, invite code, per-user profile and settings |
 | `src/worker/llm/extract.ts` | Prompt + action schema (the only thing the model does) |
 | `src/worker/llm/execute.ts` | Runs actions, resolves which event you mean, builds replies |
 | `src/worker/llm/confirm.ts` | Confirmations re-read from the store |
@@ -167,22 +176,24 @@ Map of the code:
 | `src/worker/tasks.ts` | To-dos: storage, repeat, nags, formatting |
 | `src/worker/shopping.ts` | Shopping list: storage, item matching, formatting |
 | `src/worker/notifications.ts` | Event reminders, task nags and digests (deduped, released on send failure) |
-| `src/worker/calendar/` | Store interface, in-memory store for tests, recurrence, formatting |
+| `src/worker/calendar/` | Store interface, SQLite store (guests), in-memory store (tests), recurrence, formatting |
 
 ## Security & privacy
 
-- Only `OWNER_PHONE` is served; groups, broadcasts and your own outgoing messages are ignored.
+- Only `OWNER_PHONE` and users who sent `INVITE_CODE` are served; everyone else, groups, broadcasts and outgoing messages are ignored without touching any storage. Each user's data lives in their own Durable Object.
+- A guest's calendar link is a secret URL (160-bit token): anyone holding it can read that agenda. Revoking the user (see Operations) kills the link.
 - The webhook URL carries a random secret, and `/debug/*` needs a bearer token (constant-time compared).
 - The iCloud app-specific password grants calendar access to *your own* worker only; revoke it anytime at account.apple.com.
-- Message text is sent to DeepSeek for interpretation. Nothing else leaves your Cloudflare account, iCloud and Z-API.
+- Message text (of every user) is sent to DeepSeek for interpretation, and you, as the operator, can read guests' data with `pnpm db`. Tell your friends.
+- Nothing else leaves your Cloudflare account, iCloud and Z-API.
 
 ## Limitations
 
 - Brazilian Portuguese only.
 - WhatsApp via Z-API only (not the official WhatsApp Cloud API).
-- Apple iCloud calendars only (no Google Calendar).
+- Only the owner's events sync both ways (iCloud). Guests see their agenda read-only in their calendar app (changes go through WhatsApp); no Google Calendar write access.
 - Tasks live in the bot, not in Apple's Reminders app: since the iOS 13 Reminders upgrade, iCloud no longer exposes reminders over CalDAV, and there's no public API for them.
-- One person per deployment: each friend deploys their own copy.
+- Guests all share the bot's WhatsApp number and your DeepSeek/Z-API quota.
 
 ## License
 

@@ -37,3 +37,8 @@ ZAPI_WEBHOOK_TOKEN=
 DEBUG_TOKEN=
 # Your deployed worker URL (filled after the first deploy).
 WORKER_URL=
+
+# Multi-user: anyone who sends this code to the bot joins as a user, with
+# their own agenda (stored in the bot, shown on their phone via an ICS link),
+# tasks and shopping list. Letters/digits only, 4+ chars. Empty = nobody joins.
+INVITE_CODE=
