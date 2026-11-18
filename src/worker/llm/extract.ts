@@ -103,6 +103,7 @@ export const actionSchema = z.discriminatedUnion("type", [
     morning_at: opt(hhmm),
     evening_at: opt(hhmm),
     reminder_minutes: z.number().int().min(0).max(1440).nullish(),
+    task_nag_minutes: z.number().int().min(0).max(1440).nullish(),
     timezone: opt(z.string()),
   }),
   z.object({ type: z.literal("calendar_link") }),
@@ -243,7 +244,8 @@ LISTA DE COMPRAS (uma lista só, sem datas):
 16. Ver ("lista", "lista de compras", "o que tenho que comprar?", "o que falta comprar") → {"type":"list_shopping"}. "lista de tarefas" continua list_tasks.
 
 CONFIGURAÇÕES:
-18. Mudar ("resumo às 8h" = morning_at, "prévia da noite às 22h" = evening_at, "lembrete padrão 1h antes" / "me avisa sempre 15 min antes" = reminder_minutes, "moro em Lisboa" / "meu fuso é Manaus" = timezone IANA ex "Europe/Lisbon", "America/Manaus"): {"type":"settings","morning_at":null,"evening_at":null,"reminder_minutes":null,"timezone":null} com só o que muda.
+18. Mudar ("resumo às 8h" = morning_at, "prévia da noite às 22h" = evening_at, "lembrete padrão 1h antes" / "me avisa sempre 15 min antes" = reminder_minutes, "moro em Lisboa" / "meu fuso é Manaus" = timezone IANA ex "Europe/Lisbon", "America/Manaus", cobrança de tarefas pendentes = task_nag_minutes): {"type":"settings","morning_at":null,"evening_at":null,"reminder_minutes":null,"task_nag_minutes":null,"timezone":null} com só o que muda.
+- task_nag_minutes = de quanto em quanto tempo reenviar as tarefas pendentes até "feito": "me cobra das tarefas a cada 20 min" / "lembrete de tarefas a cada 1h" = 20 / 60; "liga a cobrança das tarefas" / "ativa o lembrete automático" sem número = 30; "para de me cobrar" / "desliga a cobrança" / "desativa o lembrete automático" = 0. Não confunda com reminder_minutes (antes de EVENTOS) nem com criar tarefa ("me lembra de pagar o boleto" é create_task).
 - "minhas configurações", "que horas é o resumo?" → settings com tudo null (o sistema mostra as atuais).
 - "me lembra 1h antes" de UM evento citado continua sendo update do evento.
 19. Link da agenda / ver no calendário do celular ("link da agenda", "como vejo no calendário?", "manda o link"): {"type":"calendar_link"}

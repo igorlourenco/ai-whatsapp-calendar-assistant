@@ -30,7 +30,7 @@ import {
 } from "../tasks";
 import type { Task, TaskRef } from "../db/schema";
 import { addItems, findItem, formatShoppingList, joinNames, markBought, openItems, removeItems } from "../shopping";
-import { validTimezone } from "../config";
+import { nagMinutes, validTimezone } from "../config";
 import { loadProfile, updateProfile, type ProfilePatch } from "../users";
 import { addDays, diffDays, localDate, localDateTime, localTime, localToUtc, shortDatePt } from "../time";
 import { renderConfirmations } from "./confirm";
@@ -548,6 +548,7 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
       if (a.morning_at) patch.morningAt = a.morning_at;
       if (a.evening_at) patch.eveningAt = a.evening_at;
       if (a.reminder_minutes != null) patch.defaultReminder = a.reminder_minutes;
+      if (a.task_nag_minutes != null) patch.taskNagMinutes = nagMinutes(a.task_nag_minutes);
       if (a.timezone) {
         if (!validTimezone(a.timezone)) return `❓ Não reconheci o fuso “${a.timezone}”. Manda a cidade (ex: _meu fuso é São Paulo_).`;
         patch.tz = a.timezone;
@@ -557,6 +558,7 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
         morningAt: ctx.user?.morningAt ?? "07:00",
         eveningAt: ctx.user?.eveningAt ?? "21:00",
         defaultReminder: ctx.defaultReminder,
+        taskNagMinutes: ctx.taskNagMinutes ?? 0,
       };
       if (Object.keys(patch).length) await updateProfile(ctx.db, patch);
       const p = Object.keys(patch).length ? await loadProfile(ctx.db) : null;
@@ -565,12 +567,14 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
         morningAt: p?.morningAt ?? cur.morningAt,
         eveningAt: p?.eveningAt ?? cur.eveningAt,
         defaultReminder: p?.defaultReminder ?? cur.defaultReminder,
+        taskNagMinutes: p?.taskNagMinutes ?? cur.taskNagMinutes,
       };
       const head = Object.keys(patch).length ? "⚙️ *Configuração salva*" : "⚙️ *Suas configurações*";
       return `${head}
 ☀️ resumo do dia: ${s.morningAt}
 🌙 prévia de amanhã: ${s.eveningAt}
 ⏰ lembrete padrão: ${s.defaultReminder ? `${s.defaultReminder} min antes` : "sem lembrete"}
+🔔 cobrança de tarefas: ${s.taskNagMinutes ? `a cada ${s.taskNagMinutes} min` : "desligada (_me cobra a cada 30 min_ liga)"}
 🌎 fuso: ${s.tz}`;
     }
     case "calendar_link":
