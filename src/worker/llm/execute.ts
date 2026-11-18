@@ -30,6 +30,8 @@ import {
 } from "../tasks";
 import type { Task, TaskRef } from "../db/schema";
 import { addItems, findItem, formatShoppingList, joinNames, markBought, openItems, removeItems } from "../shopping";
+import { validTimezone } from "../config";
+import { loadProfile, updateProfile, type ProfilePatch } from "../users";
 import { addDays, diffDays, localDate, localDateTime, localTime, localToUtc, shortDatePt } from "../time";
 import { renderConfirmations } from "./confirm";
 import type { DeepSeekEnv } from "./deepseek";
@@ -48,6 +50,8 @@ export type AppCtx = {
   taskNagMinutes?: number;
   /** WhatsApp message being handled; makes creates idempotent on retry. */
   sourceMessageId?: string | null;
+  /** Guests keep events in the bot (ICS feed); the owner uses iCloud. */
+  user?: { guest: boolean; feedUrl: string | null; morningAt: string; eveningAt: string };
 };
 
 export type WriteRecord =
@@ -66,7 +70,8 @@ export const HELP_TEXT = `🤔 Não entendi. Exemplos:
 • _cancela a academia de segunda_
 • _me lembra de pagar o boleto sexta_
 • _tarefas_ · _feito o 2_
-• _compra leite e ovos_ · _lista_ · _comprei o leite_`;
+• _compra leite e ovos_ · _lista_ · _comprei o leite_
+• _resumo às 8h_ · _link da agenda_`;
 
 export type Incoming = { text: string; mediaUrl?: string | null; mediaMime?: string | null };
 export type MediaDeps = {
@@ -500,6 +505,44 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
     }
     case "list_shopping":
       return formatShoppingList(await openItems(ctx.db));
+    case "settings": {
+      const patch: ProfilePatch = {};
+      if (a.morning_at) patch.morningAt = a.morning_at;
+      if (a.evening_at) patch.eveningAt = a.evening_at;
+      if (a.reminder_minutes != null) patch.defaultReminder = a.reminder_minutes;
+      if (a.timezone) {
+        if (!validTimezone(a.timezone)) return `❓ Não reconheci o fuso “${a.timezone}”. Manda a cidade (ex: _meu fuso é São Paulo_).`;
+        patch.tz = a.timezone;
+      }
+      const cur = {
+        tz: ctx.tz,
+        morningAt: ctx.user?.morningAt ?? "07:00",
+        eveningAt: ctx.user?.eveningAt ?? "21:00",
+        defaultReminder: ctx.defaultReminder,
+      };
+      if (Object.keys(patch).length) await updateProfile(ctx.db, patch);
+      const p = Object.keys(patch).length ? await loadProfile(ctx.db) : null;
+      const s = {
+        tz: p?.tz ?? cur.tz,
+        morningAt: p?.morningAt ?? cur.morningAt,
+        eveningAt: p?.eveningAt ?? cur.eveningAt,
+        defaultReminder: p?.defaultReminder ?? cur.defaultReminder,
+      };
+      const head = Object.keys(patch).length ? "⚙️ *Configuração salva*" : "⚙️ *Suas configurações*";
+      return `${head}
+☀️ resumo do dia: ${s.morningAt}
+🌙 prévia de amanhã: ${s.eveningAt}
+⏰ lembrete padrão: ${s.defaultReminder ? `${s.defaultReminder} min antes` : "sem lembrete"}
+🌎 fuso: ${s.tz}`;
+    }
+    case "calendar_link":
+      if (!ctx.user?.guest) return "📅 Sua agenda fica no iCloud: ela já aparece no Calendário do iPhone, Mac e Watch.";
+      if (!ctx.user.feedUrl) return "❓ Ainda não tenho o link da sua agenda. Manda o código de convite de novo que eu gero.";
+      return `📅 *Sua agenda no celular* (só leitura, atualiza sozinha):
+${ctx.user.feedUrl}
+
+• iPhone: toca no link → _Assinar_.
+• Google Agenda (pelo computador): Configurações → Adicionar agenda → _Do URL_, colando o link com https:// no lugar de webcal://.`;
     case "unknown":
       return HELP_TEXT;
   }

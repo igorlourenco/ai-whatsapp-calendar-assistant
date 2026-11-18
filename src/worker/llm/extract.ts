@@ -98,6 +98,14 @@ export const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("bought"), items: opt(z.array(z.string().min(1))), all: opt(z.boolean()) }),
   z.object({ type: z.literal("remove_shopping"), items: z.array(z.string().min(1)).min(1) }),
   z.object({ type: z.literal("list_shopping") }),
+  z.object({
+    type: z.literal("settings"),
+    morning_at: opt(hhmm),
+    evening_at: opt(hhmm),
+    reminder_minutes: z.number().int().min(0).max(1440).nullish(),
+    timezone: opt(z.string()),
+  }),
+  z.object({ type: z.literal("calendar_link") }),
   z.object({ type: z.literal("unknown") }),
 ]);
 
@@ -234,7 +242,13 @@ LISTA DE COMPRAS (uma lista só, sem datas):
 15. Tirar sem comprar ("tira o leite da lista", "não precisa mais de ovos") → {"type":"remove_shopping","items":["leite"]}
 16. Ver ("lista", "lista de compras", "o que tenho que comprar?", "o que falta comprar") → {"type":"list_shopping"}. "lista de tarefas" continua list_tasks.
 
-17. Qualquer outra coisa (cumprimento, pergunta fora de agenda, mensagem incompreensível): {"type":"unknown"}
+CONFIGURAÇÕES:
+18. Mudar ("resumo às 8h" = morning_at, "prévia da noite às 22h" = evening_at, "lembrete padrão 1h antes" / "me avisa sempre 15 min antes" = reminder_minutes, "moro em Lisboa" / "meu fuso é Manaus" = timezone IANA ex "Europe/Lisbon", "America/Manaus"): {"type":"settings","morning_at":null,"evening_at":null,"reminder_minutes":null,"timezone":null} com só o que muda.
+- "minhas configurações", "que horas é o resumo?" → settings com tudo null (o sistema mostra as atuais).
+- "me lembra 1h antes" de UM evento citado continua sendo update do evento.
+19. Link da agenda / ver no calendário do celular ("link da agenda", "como vejo no calendário?", "manda o link"): {"type":"calendar_link"}
+
+20. Qualquer outra coisa (cumprimento, pergunta fora de agenda, mensagem incompreensível): {"type":"unknown"}
 
 Uma mensagem com vários pedidos gera várias ações, na ordem.
 
