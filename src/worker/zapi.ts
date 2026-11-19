@@ -57,3 +57,25 @@ export async function sendText(env: ZapiEnv, phone: string, message: string): Pr
     throw new Error(`Z-API send-text failed (${res.status}): ${await res.text()}`);
   }
 }
+
+let cachedBotPhone: string | null = null;
+
+/**
+ * The bot's own WhatsApp number (for wa.me links): BOT_PHONE if set, else
+ * asked to Z-API once per isolate. Null while the instance is disconnected.
+ */
+export async function botPhone(env: ZapiEnv & { BOT_PHONE?: string }): Promise<string | null> {
+  if (env.BOT_PHONE && digits(env.BOT_PHONE).length >= 10) return digits(env.BOT_PHONE);
+  if (cachedBotPhone) return cachedBotPhone;
+  try {
+    const res = await fetch(`https://api.z-api.io/instances/${env.ZAPI_INSTANCE_ID}/token/${env.ZAPI_TOKEN}/device`, {
+      headers: { "Client-Token": env.ZAPI_CLIENT_TOKEN },
+    });
+    const body = (await res.json().catch(() => ({}))) as { phone?: string };
+    const phone = body.phone ? digits(body.phone) : "";
+    if (res.ok && phone.length >= 10) cachedBotPhone = phone;
+  } catch (err) {
+    console.warn("[zapi] device lookup failed", err);
+  }
+  return cachedBotPhone;
+}

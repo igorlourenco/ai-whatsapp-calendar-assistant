@@ -71,6 +71,20 @@
       "when": 1795096306387,
       "tag": "0009_signup_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795104409268,
+      "tag": "0010_drop_signup_codes",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1795104409669,
+      "tag": "0011_login_requests",
+      "breakpoints": true
     }
   ]
 }

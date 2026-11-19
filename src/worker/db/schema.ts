@@ -284,23 +284,24 @@ export const users = sqliteTable("users", {
 export type User = typeof users.$inferSelect;
 
 /**
- * Registry only: one-time codes for the signup page (GET /). One row per
- * number; kept after use so the per-number send limit survives a signup.
+ * Registry only: logins started on the signup page (GET /). The page shows a
+ * short code; the person sends it to the bot on WhatsApp (so the bot only
+ * ever replies, never starts a chat) and the page, polling with the secret
+ * id, gets a session for the number that sent it.
  */
-export const signupCodes = sqliteTable(
-  "signup_codes",
+export const loginRequests = sqliteTable(
+  "login_requests",
   {
-    /** canonPhone. */
-    phone: text("phone").primaryKey(),
-    /** SHA-256 of "<phone>:<code>"; null once used. */
-    codeHash: text("code_hash"),
+    /** Secret handle only the page knows (polling). */
+    id: text("id").primaryKey(),
+    /** What the person sends on WhatsApp ("entrar K7M2QX"). */
+    code: text("code").notNull().unique(),
+    /** Digits as WhatsApp reported the sender; null until claimed. */
+    phone: text("phone"),
     expiresAt: ts("expires_at").notNull(),
-    /** Wrong guesses against the current code. */
-    attempts: integer("attempts").notNull().default(0),
-    /** Codes sent since windowStart (rolling 24 h). */
-    sends: integer("sends").notNull().default(0),
-    windowStart: ts("window_start").notNull(),
-    lastSentAt: ts("last_sent_at").notNull(),
+    /** Set when the page picked up the session (single use). */
+    consumed: integer("consumed", { mode: "boolean" }).notNull().default(false),
+    createdAt: ts("created_at").notNull().$defaultFn(now),
   },
-  (t) => [index("signup_codes_window_idx").on(t.windowStart)],
+  (t) => [index("login_requests_created_idx").on(t.createdAt)],
 );

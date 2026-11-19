@@ -9,6 +9,8 @@ import m0006 from './0006_user_icloud.sql';
 import m0007 from './0007_task_nag.sql';
 import m0008 from './0008_task_category.sql';
 import m0009 from './0009_signup_codes.sql';
+import m0010 from './0010_drop_signup_codes.sql';
+import m0011 from './0011_login_requests.sql';
 
   export default {
     journal,
@@ -22,7 +24,9 @@ m0005,
 m0006,
 m0007,
 m0008,
-m0009
+m0009,
+m0010,
+m0011
     }
   }
   

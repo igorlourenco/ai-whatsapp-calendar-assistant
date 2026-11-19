@@ -1,123 +1,96 @@
-import { and, eq, gt, lt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 
 import type { Db } from "./db/client";
-import { signupCodes } from "./db/schema";
-import { canonPhone, digits } from "./zapi";
+import { loginRequests } from "./db/schema";
+import { digits } from "./zapi";
 
 /*
- * Open signup (the page at GET /): anyone proves they own a WhatsApp number
- * with a one-time code the bot sends there, and joins like an invite-code
- * user. The code bookkeeping lives in the "registry" object.
+ * Login for the signup page (GET /), WhatsApp-first: the page asks for a
+ * code, the person sends "entrar <code>" to the bot (wa.me link with the
+ * text filled in), and the page, polling with its secret id, gets a session
+ * for the number that sent it.
  *
- * Abuse limits: the page makes the bot message numbers typed by strangers,
- * so sends are capped per number, per IP (rate-limit binding, index.ts) and
- * per deployment, to keep the Z-API number from looking like a spammer.
+ * The bot never messages a number first. WhatsApp restricts accounts that
+ * start chats with strangers (it did, when the page used to send codes), so
+ * every message the bot sends is a reply in a chat the person opened.
  */
 
-export const CODE_TTL_MS = 10 * 60_000;
-export const RESEND_AFTER_MS = 60_000;
-export const MAX_SENDS_PER_DAY = 5;
-export const MAX_ATTEMPTS = 5;
-/** All numbers together, per rolling 24 h. */
-export const GLOBAL_SENDS_PER_DAY = 200;
-const DAY_MS = 24 * 60 * 60_000;
+export const LOGIN_TTL_MS = 10 * 60_000;
+/** All pending logins together, per hour (keeps the table small under abuse). */
+export const MAX_LOGINS_PER_HOUR = 500;
+const HOUR_MS = 60 * 60_000;
+
+/** No 0/O, 1/I/L: easy to read on screen and to type by hand. */
+const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const CODE_LEN = 6;
+
+function randomCode(): string {
+  const buf = new Uint8Array(CODE_LEN * 2);
+  crypto.getRandomValues(buf);
+  let out = "";
+  // 248 = 8 × 31: rejection keeps the alphabet uniform.
+  for (const b of buf) if (b < 248 && out.length < CODE_LEN) out += ALPHABET[b % ALPHABET.length];
+  return out.length === CODE_LEN ? out : randomCode();
+}
+
+const hex = (n: number) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+/** The text the wa.me link fills in. */
+export const loginText = (code: string) => `Entrar na agenda: ${code}`;
 
 /**
- * What the person typed → digits with country code, as WhatsApp addresses
- * it. "+…" is taken as is; 10–11 digits without "+" are Brazilian (DDD +
- * number). Null when it can't be a phone number.
+ * The login code in a WhatsApp message, if it is one ("Entrar na agenda:
+ * K7M2QX", "entrar k7m2qx"). Needs the word "entrar" so ordinary messages
+ * never hit the registry.
  */
-export function parsePhone(input: string): string | null {
-  const raw = input.trim();
-  let d = digits(raw);
-  if (!raw.startsWith("+") && !d.startsWith("00") && (d.length === 10 || d.length === 11)) d = `55${d}`;
-  if (d.startsWith("00")) d = d.slice(2);
-  if (d.length < 10 || d.length > 15 || d.startsWith("0")) return null;
-  // Brazilian numbers: 55 + DDD (2) + 8–9 digits.
-  if (d.startsWith("55") && (d.length < 12 || d.length > 13)) return null;
-  return d;
+export function loginCodeIn(text: string): string | null {
+  const t = text.normalize("NFKC").trim();
+  if (t.length > 80 || !/\bentrar\b/i.test(t)) return null;
+  // The last standalone 6-char token: "agenda" in the filled-in text is one too.
+  const tokens = t.split(/[^\p{L}\p{N}]+/u).filter((w) => w.length === CODE_LEN && new RegExp(`^[${ALPHABET}]+$`, "i").test(w));
+  return tokens.length ? tokens[tokens.length - 1]!.toUpperCase() : null;
 }
 
-async function hash(phone: string, code: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${canonPhone(phone)}:${code}`));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+export type LoginStart = { ok: true; id: string; code: string; expiresAt: number } | { ok: false };
 
-function newCode(): string {
-  // Rejection sampling: uniform over 000000–999999.
-  const buf = new Uint32Array(1);
-  do crypto.getRandomValues(buf);
-  while (buf[0]! >= 4_294_000_000);
-  return String(buf[0]! % 1_000_000).padStart(6, "0");
-}
-
-export type CodeRequest =
-  | { ok: true; code: string }
-  | { ok: false; reason: "wait"; seconds: number }
-  | { ok: false; reason: "limit" | "busy" };
-
-/** A fresh code for this number (replaces any previous one), or why not. */
-export async function requestCode(db: Db, phone: string, now = new Date()): Promise<CodeRequest> {
-  const key = canonPhone(phone);
+export async function startLogin(db: Db, now = new Date()): Promise<LoginStart> {
   const t = now.getTime();
-  await db.delete(signupCodes).where(lt(signupCodes.windowStart, new Date(t - 2 * DAY_MS)));
-
-  const [row] = await db.select().from(signupCodes).where(eq(signupCodes.phone, key)).limit(1);
-  if (row && t - row.lastSentAt.getTime() < RESEND_AFTER_MS) {
-    return { ok: false, reason: "wait", seconds: Math.ceil((RESEND_AFTER_MS - (t - row.lastSentAt.getTime())) / 1000) };
+  await db.delete(loginRequests).where(lt(loginRequests.expiresAt, new Date(t - HOUR_MS)));
+  const [{ n }] = (await db
+    .select({ n: sql<number>`count(*)` })
+    .from(loginRequests)
+    .where(gt(loginRequests.createdAt, new Date(t - HOUR_MS)))) as [{ n: number }];
+  if (Number(n) >= MAX_LOGINS_PER_HOUR) return { ok: false };
+  for (let i = 0; i < 5; i++) {
+    const row = { id: hex(24), code: randomCode(), expiresAt: new Date(t + LOGIN_TTL_MS), createdAt: now };
+    const ins = await db.insert(loginRequests).values(row).onConflictDoNothing().returning({ id: loginRequests.id });
+    if (ins.length) return { ok: true, id: row.id, code: row.code, expiresAt: row.expiresAt.getTime() };
   }
-  const sameWindow = row && t - row.windowStart.getTime() < DAY_MS;
-  if (sameWindow && row.sends >= MAX_SENDS_PER_DAY) return { ok: false, reason: "limit" };
-
-  const [{ total }] = (await db
-    .select({ total: sql<number>`coalesce(sum(${signupCodes.sends}), 0)` })
-    .from(signupCodes)
-    .where(gt(signupCodes.windowStart, new Date(t - DAY_MS)))) as [{ total: number }];
-  if (Number(total) >= GLOBAL_SENDS_PER_DAY) return { ok: false, reason: "busy" };
-
-  const code = newCode();
-  const values = {
-    codeHash: await hash(key, code),
-    expiresAt: new Date(t + CODE_TTL_MS),
-    attempts: 0,
-    sends: sameWindow ? row.sends + 1 : 1,
-    windowStart: sameWindow ? row.windowStart : now,
-    lastSentAt: now,
-  };
-  await db.insert(signupCodes).values({ phone: key, ...values }).onConflictDoUpdate({ target: signupCodes.phone, set: values });
-  return { ok: true, code };
+  return { ok: false };
 }
 
-/** Undo a send that never reached Z-API, so it doesn't count against the limits. */
-export async function cancelCode(db: Db, phone: string): Promise<void> {
-  const key = canonPhone(phone);
-  await db
-    .update(signupCodes)
-    .set({ codeHash: null, sends: sql`max(${signupCodes.sends} - 1, 0)`, lastSentAt: new Date(0) })
-    .where(eq(signupCodes.phone, key));
+/** A WhatsApp message carried this code: bind the sender. False if unknown, expired or already used. */
+export async function claimLogin(db: Db, code: string, phone: string, now = new Date()): Promise<boolean> {
+  const res = await db
+    .update(loginRequests)
+    .set({ phone: digits(phone) })
+    .where(and(eq(loginRequests.code, code.toUpperCase()), isNull(loginRequests.phone), gt(loginRequests.expiresAt, now)))
+    .returning({ id: loginRequests.id });
+  return res.length > 0;
 }
 
-export type CodeCheck = "ok" | "wrong" | "expired" | "locked";
+export type LoginPoll = { status: "pending" } | { status: "expired" } | { status: "ok"; phone: string };
 
-/** Check a code. Right → consumed (single use). Wrong → counts toward MAX_ATTEMPTS. */
-export async function verifyCode(db: Db, phone: string, code: string, now = new Date()): Promise<CodeCheck> {
-  const key = canonPhone(phone);
-  const [row] = await db.select().from(signupCodes).where(eq(signupCodes.phone, key)).limit(1);
-  if (!row?.codeHash || row.expiresAt.getTime() <= now.getTime()) return "expired";
-  if (row.attempts >= MAX_ATTEMPTS) return "locked";
-  const clean = digits(code);
-  if (clean.length === 6 && (await hash(key, clean)) === row.codeHash) {
-    // Conditional on the hash: two racing correct guesses consume it once.
-    const used = await db
-      .update(signupCodes)
-      .set({ codeHash: null })
-      .where(and(eq(signupCodes.phone, key), eq(signupCodes.codeHash, row.codeHash)))
-      .returning({ phone: signupCodes.phone });
-    return used.length ? "ok" : "expired";
-  }
-  await db
-    .update(signupCodes)
-    .set({ attempts: row.attempts + 1 })
-    .where(eq(signupCodes.phone, key));
-  return row.attempts + 1 >= MAX_ATTEMPTS ? "locked" : "wrong";
+/** The page asks whether its code arrived. "ok" is returned once (the session is single use). */
+export async function pollLogin(db: Db, id: string, now = new Date()): Promise<LoginPoll> {
+  if (!/^[a-f0-9]{48}$/.test(id)) return { status: "expired" };
+  const [row] = await db.select().from(loginRequests).where(eq(loginRequests.id, id)).limit(1);
+  if (!row || row.consumed) return { status: "expired" };
+  if (!row.phone) return row.expiresAt.getTime() > now.getTime() ? { status: "pending" } : { status: "expired" };
+  const took = await db
+    .update(loginRequests)
+    .set({ consumed: true })
+    .where(and(eq(loginRequests.id, id), eq(loginRequests.consumed, false)))
+    .returning({ phone: loginRequests.phone });
+  return took[0]?.phone ? { status: "ok", phone: took[0].phone } : { status: "expired" };
 }

@@ -19,7 +19,7 @@ import { nextWakeUp, runDue, type CronConfig } from "./notifications";
 import { addUser, findUser, findUserByToken, listUsers, loadProfile, removeUser, setupGuest, userSettings } from "./users";
 import { calendarHome } from "./icloud/caldav";
 import { seal } from "./secrets";
-import { cancelCode, requestCode, verifyCode } from "./signup";
+import { claimLogin, pollLogin, startLogin } from "./signup";
 import { localDate, localDateTime } from "./time";
 import { canonPhone, digits, samePhone, sendText } from "./zapi";
 
@@ -321,14 +321,14 @@ Tenta: _dentista sexta 15h_ · _o que tenho amanhã?_`,
   registryRemove(phone: string) {
     return removeUser(this.sqlDb, phone);
   }
-  signupRequest(phone: string) {
-    return requestCode(this.sqlDb, phone);
+  loginStart() {
+    return startLogin(this.sqlDb);
   }
-  signupCancel(phone: string) {
-    return cancelCode(this.sqlDb, phone);
+  loginClaim(code: string, phone: string) {
+    return claimLogin(this.sqlDb, code, phone);
   }
-  signupVerify(phone: string, code: string) {
-    return verifyCode(this.sqlDb, phone, code);
+  loginPoll(id: string) {
+    return pollLogin(this.sqlDb, id);
   }
 
   /* ----------------------- debug / ops (token-guarded) ---------------------- */
