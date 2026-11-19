@@ -16,6 +16,8 @@
   // ⚠️ All app state lives in the Scheduler Durable Object's SQLite. Never add a
   // migration that renames or deletes "Scheduler" without first saving
   // `pnpm db export`.
+  // Signup page (portal.ts): per-IP limit on /signup/* (sends WhatsApp codes).
+  "ratelimits": [{ "name": "SIGNUP_LIMIT", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Scheduler"] }],
   // Drizzle migrations are bundled as text and applied by the DO on startup.
   "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }]

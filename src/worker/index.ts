@@ -1,9 +1,9 @@
 import { Hono, type Context } from "hono";
 
 import type { CategoryConfig, ExportData } from "./debug";
+import { portal } from "./portal";
 import { registry, scheduler, type Inbound } from "./scheduler";
-import { settings } from "./config";
-import { hasInvite } from "./users";
+import { hasInvite, welcome } from "./users";
 import { canonPhone, samePhone, type ZapiReceived } from "./zapi";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -60,23 +60,6 @@ app.post("/webhooks/zapi", async (c) => {
   }
   return c.json({ ok: true });
 });
-
-function welcome(env: Env, name: string | null, feedUrl: string): string {
-  const { morningAt, defaultReminder } = settings(env);
-  const hi = name ? `👋 Oi, ${name.split(" ")[0]}! Você entrou.` : "👋 Oi! Você entrou.";
-  return `${hi} Sou sua agenda no WhatsApp: escreve do jeito que você fala.
-
-• _dentista sexta 15h_
-• _aula de inglês toda terça 19h_
-• _o que tenho amanhã?_
-• _me lembra de pagar o boleto dia 10_
-• _compra leite e ovos_ · _lista_
-
-Te mando um resumo do dia às ${morningAt} e lembro dos compromissos ${defaultReminder} min antes. Pra mudar: _resumo às 8h_, _lembrete 1h antes_.
-
-📅 *Pra ver a agenda no calendário do celular*, toca no link (iPhone: "Assinar"; Google Agenda: Configurações → Adicionar agenda → Por URL, trocando webcal:// por https://):
-${feedUrl}`;
-}
 
 /* --------------------------- Calendar feeds ---------------------------- */
 // Read-only ICS for users without iCloud. The token in the URL is the secret.
@@ -169,6 +152,11 @@ app.post("/debug/restore", async (c) => {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
+
+/* ------------------------------- Signup -------------------------------- */
+// Open signup page at "/" (see portal.ts).
+
+app.route("/", portal);
 
 app.all("*", (c) => c.text("not found", 404));
 

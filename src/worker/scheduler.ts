@@ -19,6 +19,7 @@ import { nextWakeUp, runDue, type CronConfig } from "./notifications";
 import { addUser, findUser, findUserByToken, listUsers, loadProfile, removeUser, setupGuest, userSettings } from "./users";
 import { calendarHome } from "./icloud/caldav";
 import { seal } from "./secrets";
+import { cancelCode, requestCode, verifyCode } from "./signup";
 import { localDate, localDateTime } from "./time";
 import { canonPhone, digits, samePhone, sendText } from "./zapi";
 
@@ -172,14 +173,19 @@ export class Scheduler extends DurableObject<Env> {
    * message queued in the inbox (sent with the usual retries). Idempotent:
    * sending the code again just re-sends the welcome.
    */
-  async join(m: { messageId: string; phone: string; name: string | null; feedUrl: string; welcome: string }): Promise<void> {
-    await setupGuest(this.sqlDb, m.phone, m.name, m.feedUrl);
+  async join(m: { messageId: string; phone: string; name: string | null; feedUrl: string; welcome: string; tz?: string | null }): Promise<void> {
+    await setupGuest(this.sqlDb, m.phone, m.name, m.feedUrl, m.tz);
     await this.db
       .insert(inboundMessages)
       .values({ messageId: m.messageId, phone: m.phone, text: "", status: "answered", reply: m.welcome })
       .onConflictDoNothing();
     this.kicked = true;
     await this.ctx.storage.setAlarm(Date.now());
+  }
+
+  /** Has this object been set up (and how)? For the signup page. */
+  async storageKind(): Promise<"icloud" | "local" | null> {
+    return (await this.profile())?.storage ?? null;
   }
 
   /** This user's events as an ICS feed (guests only; null for the owner). */
@@ -295,6 +301,15 @@ Tenta: _dentista sexta 15h_ · _o que tenho amanhã?_`,
   }
   registryRemove(phone: string) {
     return removeUser(this.sqlDb, phone);
+  }
+  signupRequest(phone: string) {
+    return requestCode(this.sqlDb, phone);
+  }
+  signupCancel(phone: string) {
+    return cancelCode(this.sqlDb, phone);
+  }
+  signupVerify(phone: string, code: string) {
+    return verifyCode(this.sqlDb, phone, code);
   }
 
   /* ----------------------- debug / ops (token-guarded) ---------------------- */

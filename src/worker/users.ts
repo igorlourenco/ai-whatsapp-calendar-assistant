@@ -68,10 +68,10 @@ export async function updateProfile(db: Db, patch: ProfilePatch): Promise<Profil
 }
 
 /** First message of a new user: profile + starter categories. Idempotent. */
-export async function setupGuest(db: Db, phone: string, name: string | null, feedUrl: string): Promise<void> {
+export async function setupGuest(db: Db, phone: string, name: string | null, feedUrl: string, tz?: string | null): Promise<void> {
   await db
     .insert(profile)
-    .values({ id: 1, phone: digits(phone), name, storage: "local", feedUrl })
+    .values({ id: 1, phone: digits(phone), name, storage: "local", feedUrl, tz: tz ?? null })
     .onConflictDoUpdate({ target: profile.id, set: { feedUrl } });
   if ((await db.select().from(categories).limit(1)).length) return;
   await db.insert(categories).values(
@@ -94,3 +94,21 @@ export function userSettings(env: Parameters<typeof settings>[0], p: Profile | n
 }
 
 export const isGuest = (p: Profile | null) => p?.storage === "local";
+
+/** First WhatsApp message a new user gets (invite code or signup page). */
+export function welcome(env: Parameters<typeof settings>[0], name: string | null, feedUrl: string): string {
+  const { morningAt, defaultReminder } = settings(env);
+  const hi = name ? `👋 Oi, ${name.split(" ")[0]}! Você entrou.` : "👋 Oi! Você entrou.";
+  return `${hi} Sou sua agenda no WhatsApp: escreve do jeito que você fala.
+
+• _dentista sexta 15h_
+• _aula de inglês toda terça 19h_
+• _o que tenho amanhã?_
+• _me lembra de pagar o boleto dia 10_
+• _compra leite e ovos_ · _lista_
+
+Te mando um resumo do dia às ${morningAt} e lembro dos compromissos ${defaultReminder} min antes. Pra mudar: _resumo às 8h_, _lembrete 1h antes_.
+
+📅 *Pra ver a agenda no calendário do celular*, toca no link (iPhone: "Assinar"; Google Agenda: Configurações → Adicionar agenda → Por URL, trocando webcal:// por https://):
+${feedUrl}`;
+}
