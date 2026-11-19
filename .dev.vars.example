@@ -44,7 +44,6 @@ WORKER_URL=
 # tasks and shopping list. Letters/digits only, 4+ chars. Empty = nobody joins.
 INVITE_CODE=
 
-# Optional: Cloudflare Turnstile on the signup page (GET /). Create a widget
-# at dash.cloudflare.com → Turnstile with the worker's hostname.
-TURNSTILE_SITE_KEY=
-TURNSTILE_SECRET=
+# Optional: the bot's own WhatsApp number (the Z-API one), for the signup
+# page's wa.me link. Empty = asked to Z-API while the instance is connected.
+BOT_PHONE=

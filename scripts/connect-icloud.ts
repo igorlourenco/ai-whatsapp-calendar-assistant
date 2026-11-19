@@ -7,7 +7,10 @@
  *   pnpm connect-icloud
  *
  * The person needs an app-specific password: account.apple.com → Sign-In and
- * Security → App-Specific Passwords. They don't need the invite code.
+ * Security → App-Specific Passwords. They don't need the invite code, but
+ * they must have messaged the bot first: the welcome is sent right away, and
+ * WhatsApp restricts numbers that start chats with strangers. (Easier: they
+ * connect it themselves on the signup page, GET /.)
  * Re-run anytime (new password, other calendars).
  */
 import { createInterface } from "node:readline/promises";
@@ -47,6 +50,7 @@ async function secret(q: string): Promise<string> {
 }
 
 console.log("\n\x1b[1mConnect someone's iCloud\x1b[0m");
+console.log("  \x1b[33m!\x1b[0m They must have sent any message to the bot first (WhatsApp restricts bots that start chats).\n");
 // Exactly as typed (BR mobiles WITH the 9): it is where WhatsApp messages go.
 const phone = digits(await ask("Their WhatsApp number (with country code)"));
 if (phone.length < 10) die("That doesn't look like a phone number.");
