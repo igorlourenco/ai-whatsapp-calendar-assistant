@@ -40,7 +40,7 @@ type Expect =
   | { kind: "ask" }
   | { kind: "query"; replyLike: RegExp }
   | { kind: "task_create"; titleLike: RegExp; due: string | null; time?: string; repeats?: boolean }
-  | { kind: "task_update"; titleLike: RegExp; due: string; time?: string }
+  | { kind: "task_update"; titleLike: RegExp; due: string | null; time?: string }
   | { kind: "task_done"; titleLike: RegExp }
   | { kind: "task_list"; replyLike: RegExp }
   /** Shopping list: open item names afterwards (lowercase, any order). */
@@ -87,6 +87,11 @@ const CASES: { msg: string; expect: Expect }[] = [
   { msg: "feito o 1", expect: { kind: "task_done", titleLike: /ra[cç][aã]o/i } },
   { msg: "adia o banco pra sexta", expect: { kind: "task_update", titleLike: /banco/i, due: next(5), time: "10:00" } },
   { msg: "paguei o boleto da faculdade", expect: { kind: "task_done", titleLike: /boleto/i } },
+  // someday tasks: no date on purpose → saved undated, no question
+  { msg: "algum dia quero aprender a tocar violão", expect: { kind: "task_create", titleLike: /viol[aã]o/i, due: null } },
+  { msg: "me lembra de trocar o filtro do ar condicionado", expect: { kind: "ask" } },
+  { msg: "sem data, quando der", expect: { kind: "task_create", titleLike: /filtro/i, due: null } },
+  { msg: "deixa o banco sem data", expect: { kind: "task_update", titleLike: /banco/i, due: null } },
   // shopping list: no date → list; dated purchase stays a task
   { msg: "compra leite, ovos e pão", expect: { kind: "shop", open: ["leite", "ovos", "pão"] } },
   { msg: "acabou o café, põe na lista", expect: { kind: "shop", open: ["leite", "ovos", "pão", "café"] } },

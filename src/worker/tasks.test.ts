@@ -47,7 +47,7 @@ describe("tasks", () => {
 
   it("no date → asks 'pra quando?', saves nothing; the answer completes it", async () => {
     expect(await step([task({ title: "Comprar presente" })], "m2")).toBe(
-      "❓ *Comprar presente*: pra quando? (ex: _hoje_, _sexta_, _amanhã 10h_)",
+      "❓ *Comprar presente*: pra quando? (ex: _hoje_, _sexta_, _amanhã 10h_, ou _sem data_)",
     );
     expect(await all()).toHaveLength(1);
     expect(state.draft).toMatchObject({ kind: "task", title: "Comprar presente" });
@@ -189,6 +189,59 @@ describe("task lists (categories)", () => {
   it("move a task to another list", async () => {
     expect(await run([{ type: "update_task", search: "lâmpada", changes: { category: "trabalho" } }])).toMatch(/^✏️ \*Tarefa atualizada\*\n💼 \*Trocar lâmpada\*/);
     expect(await run([{ type: "update_task", search: "lâmpada", changes: { category: "academia" } }])).toContain("Não tenho a lista “academia”");
+  });
+});
+
+describe("someday tasks (no date on purpose)", () => {
+  let sctx: AppCtx;
+  let st: State = { draft: null, focus: [] };
+  const run = async (actions: Action[], id?: string) => {
+    const r = await executeActions({ ...sctx, sourceMessageId: id }, actions, st);
+    st = r.state;
+    return r.reply;
+  };
+  const rows = () => sctx.db.select().from(tasks);
+
+  beforeAll(async () => {
+    sctx = { ...ctx, db: await memoryDb() };
+  });
+
+  it("'algum dia quero aprender violão' → saved undated, no question, no nag", async () => {
+    expect(await run([task({ title: "Aprender violão", someday: true })], "s1")).toBe(
+      "📝 *Tarefa anotada*\n🏠 *Aprender violão*\n💭 sem data: fica na lista (_tarefas_) até você dizer *feito*, sem cobrança",
+    );
+    expect(st.draft).toBeNull();
+    const [t] = await rows();
+    expect(t).toMatchObject({ title: "Aprender violão", dueDate: null, dueTime: null, status: "open" });
+    expect(nextNagAt(t!, { morningAt: "07:00", every: 30, until: "22:00" }, TZ, new Date())).toBeNull();
+    // A stray time without a date is dropped, not saved on its own.
+    await run([task({ title: "Ler Duna", someday: true, due_time: "10:00" })], "s2");
+    expect((await rows()).find((r) => r.title === "Ler Duna")?.dueTime).toBeNull();
+  });
+
+  it("'pra quando?' answered with 'sem data' saves it undated; prompt explains that", async () => {
+    expect(await run([task({ title: "Trocar o chuveiro" })], "s3")).toMatch(/pra quando\?/);
+    expect(buildPrompt(new Date(), TZ, [], st)).toContain('"someday":true');
+    expect(await run([task({ title: "Trocar o chuveiro", someday: true })], "s3b")).toMatch(/^📝 \*Tarefa anotada\*\n🏠 \*Trocar o chuveiro\*\n💭 sem data/);
+    expect(st.draft).toBeNull();
+  });
+
+  it("undated tasks list last; not in digests; a date can be set and taken off again", async () => {
+    await run([task({ title: "Pagar luz", due_date: "2026-11-16" })], "s4");
+    expect(await run([{ type: "list_tasks" }])).toBe(
+      "📝 *Tarefas* (4)\n1. Pagar luz — hoje\n2. Aprender violão\n3. Ler Duna\n4. Trocar o chuveiro\n\n_Responda “feito 1”, “adia o 2 pra sexta”…_",
+    );
+    const digest = await morningDigest(sctx, "2026-11-16");
+    expect(digest).toContain("Pagar luz");
+    expect(digest).not.toContain("violão");
+
+    expect(await run([{ type: "update_task", search: "violão", changes: { due_date: "2026-12-01", due_time: "19:00" } }])).toMatch(
+      /🗓️ terça, 1 de dezembro · 19:00/,
+    );
+    expect(await run([{ type: "update_task", search: "violão", changes: { no_date: true } }])).toMatch(
+      /^✏️ \*Tarefa atualizada\*\n🏠 \*Aprender violão\*\n💭 sem data/,
+    );
+    expect((await rows()).find((r) => r.title === "Aprender violão")).toMatchObject({ dueDate: null, dueTime: null, remindedAt: null });
   });
 });
 
