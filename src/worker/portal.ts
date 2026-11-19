@@ -8,38 +8,39 @@ import { calendarHome, listCalendars } from "./icloud/caldav";
 import { portalPage } from "./portal-page";
 import { registry, scheduler } from "./scheduler";
 import { createSession, readSession } from "./session";
-import { parsePhone } from "./signup";
+import { loginText } from "./signup";
 import { welcome } from "./users";
-import { canonPhone, samePhone, sendText } from "./zapi";
+import { botPhone, canonPhone, samePhone } from "./zapi";
 
 /*
  * Signup / account page (GET /), open to anyone:
  *
- * 1. Number → the bot sends a 6-digit code there (POST /signup/code).
- * 2. Code → a 30-min session for that number (POST /signup/verify). It works
- *    as login too: an existing user lands on their account.
+ * 1. The page gets a short code (POST /signup/start) and a wa.me link that
+ *    opens a chat with the bot with "Entrar na agenda: <code>" filled in.
+ *    The person sends it; the webhook binds their number to the code and the
+ *    bot replies. The bot never writes first (see signup.ts).
+ * 2. The page polls GET /signup/status and gets a 30-min session for that
+ *    number. It works as login too: an existing user lands on their account.
  * 3. New users pick where their agenda lives: in the bot, shown read-only on
  *    the phone through a calendar link (POST /account/guest), or their own
  *    iCloud, two-way (POST /account/icloud/calendars, then /account/icloud).
  *    Existing users can switch to iCloud, or delete their account
  *    (POST /account/delete).
- *
- * Optional Cloudflare Turnstile: set TURNSTILE_SITE_KEY + TURNSTILE_SECRET.
  */
 
-type PortalEnv = Env & { TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET?: string; SIGNUP_LIMIT?: RateLimit };
+type PortalEnv = Env & { BOT_PHONE?: string; SIGNUP_LIMIT?: RateLimit };
 type C = Context<{ Bindings: PortalEnv }>;
 
 export const portal = new Hono<{ Bindings: PortalEnv }>();
 
 const SECURITY_HEADERS = {
   "Content-Security-Policy":
-    "default-src 'none'; script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; frame-src https://challenges.cloudflare.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
 };
 
-portal.get("/", (c) => c.html(portalPage({ turnstileSiteKey: c.env.TURNSTILE_SITE_KEY || null }), 200, SECURITY_HEADERS));
+portal.get("/", (c) => c.html(portalPage(), 200, SECURITY_HEADERS));
 
 const err = (c: Context, message: string, status: 400 | 401 | 403 | 429 | 502 = 400) => c.json({ ok: false, error: message }, status);
 
@@ -51,7 +52,8 @@ async function ipAllowed(env: PortalEnv, ip: string): Promise<boolean> {
   return (await env.SIGNUP_LIMIT.limit({ key: ip })).success;
 }
 
-portal.use("/signup/*", async (c, next) => {
+// Not on /signup/status: the page polls it every couple of seconds (a cheap read).
+portal.use("/signup/start", async (c, next) => {
   if (!(await ipAllowed(c.env, clientIp(c)))) return err(c, "Muitas tentativas. Espera um minuto e tenta de novo.", 429);
   await next();
 });
@@ -59,18 +61,6 @@ portal.use("/account/*", async (c, next) => {
   if (!(await ipAllowed(c.env, clientIp(c)))) return err(c, "Muitas tentativas. Espera um minuto e tenta de novo.", 429);
   await next();
 });
-
-async function turnstileOk(env: PortalEnv, token: string | undefined, ip: string): Promise<boolean> {
-  if (!env.TURNSTILE_SECRET) return true;
-  if (!token) return false;
-  const form = new FormData();
-  form.append("secret", env.TURNSTILE_SECRET);
-  form.append("response", token);
-  form.append("remoteip", ip);
-  const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: form });
-  const out = (await res.json().catch(() => ({}))) as { success?: boolean };
-  return out.success === true;
-}
 
 /** Trimmed, no control/markdown chars, ≤ max chars. */
 function cleanText(v: unknown, max = 60): string | null {
@@ -84,52 +74,25 @@ const str = (v: unknown) => (typeof v === "string" ? v : "");
 type Body = Record<string, unknown>;
 const json = async (c: Context) => ((await c.req.json<Body>().catch(() => ({}))) ?? {}) as Body;
 
-/* ------------------------------ login code ------------------------------ */
+/* -------------------------------- login --------------------------------- */
 
-/** Step 1: send a code to the number on WhatsApp. */
-portal.post("/signup/code", async (c) => {
-  const body = await json(c);
-  const phone = parsePhone(str(body.phone));
-  if (!phone) return err(c, "Esse número não parece certo. Usa DDD + número, ou +código do país.");
-  if (!(await turnstileOk(c.env, str(body.turnstile) || undefined, clientIp(c)))) {
-    return err(c, "Não deu pra confirmar que você é uma pessoa. Recarrega a página e tenta de novo.", 403);
-  }
-
-  const reg = registry(c.env);
-  const req = await reg.signupRequest(phone);
-  if (!req.ok) {
-    if (req.reason === "wait") return err(c, `Já mandei um código. Pra mandar outro, espera ${req.seconds} s.`, 429);
-    if (req.reason === "limit") return err(c, "Esse número já pediu códigos demais hoje. Tenta amanhã.", 429);
-    return err(c, "Muita gente se cadastrando agora. Tenta de novo mais tarde.", 429);
-  }
-  try {
-    await sendText(
-      c.env,
-      phone,
-      `🔐 Seu código pra entrar na agenda: *${req.code}*\n\nVale por 10 minutos. Se não foi você que pediu, ignora esta mensagem.`,
-    );
-  } catch (e) {
-    console.error("[signup] send failed", canonPhone(phone), e);
-    await reg.signupCancel(phone);
-    return err(c, "Não consegui mandar a mensagem pra esse número. Ele tem WhatsApp?", 502);
-  }
-  console.log("[signup] code sent", canonPhone(phone));
-  return c.json({ ok: true, phone });
+/** Step 1: a code the person sends to the bot on WhatsApp (wa.me link with the text filled in). */
+portal.post("/signup/start", async (c) => {
+  const bot = await botPhone(c.env);
+  if (!bot) return err(c, "O bot está fora do ar agora. Tenta de novo mais tarde.", 502);
+  const start = await registry(c.env).loginStart();
+  if (!start.ok) return err(c, "Muita gente entrando agora. Tenta de novo em alguns minutos.", 429);
+  const text = loginText(start.code);
+  return c.json({ ok: true, id: start.id, code: start.code, text, link: `https://wa.me/${bot}?text=${encodeURIComponent(text)}`, expiresAt: start.expiresAt });
 });
 
-/** Step 2: the code proves the number → session + the account, if any. */
-portal.post("/signup/verify", async (c) => {
-  const body = await json(c);
-  const phone = parsePhone(str(body.phone));
-  if (!phone) return err(c, "Número inválido. Volta e confere.");
+/** Step 2 (polled): did that code arrive? → session + the account, if any. */
+portal.get("/signup/status", async (c) => {
+  const poll = await registry(c.env).loginPoll(c.req.query("id") ?? "");
+  if (poll.status !== "ok") return c.json({ ok: true, status: poll.status });
+  const phone = poll.phone;
   if (samePhone(phone, c.env.OWNER_PHONE)) return err(c, "Esse é o número do administrador: a conta dele se configura pelo terminal.", 403);
-
-  const check = await registry(c.env).signupVerify(phone, str(body.code));
-  if (check === "wrong") return err(c, "Código errado. Confere a mensagem no WhatsApp.");
-  if (check === "locked") return err(c, "Errou o código vezes demais. Pede um novo.", 429);
-  if (check === "expired") return err(c, "Esse código expirou. Pede um novo.");
-
-  return c.json({ ok: true, token: await createSession(c.env.CREDENTIALS_KEY, phone), account: await account(c, phone) });
+  return c.json({ ok: true, status: "ok", token: await createSession(c.env.CREDENTIALS_KEY, phone), account: await account(c, phone) });
 });
 
 /* ------------------------------- account -------------------------------- */

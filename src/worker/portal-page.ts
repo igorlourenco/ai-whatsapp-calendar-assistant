@@ -1,8 +1,5 @@
 /** The signup page (GET /). Plain HTML + inline CSS/JS; talks to /signup/*. */
-export function portalPage(o: { turnstileSiteKey: string | null }): string {
-  const turnstile = o.turnstileSiteKey
-    ? `<div class="cf-turnstile" data-sitekey="${o.turnstileSiteKey.replace(/[^\w-]/g, "")}" data-language="pt-br" data-size="flexible" data-appearance="interaction-only"></div>`
-    : "";
+export function portalPage(): string {
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -14,7 +11,6 @@ export function portalPage(o: { turnstileSiteKey: string | null }): string {
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,640&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-${o.turnstileSiteKey ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ""}
 <style>
 :root {
   --bg: #f6f3ec;
@@ -155,7 +151,12 @@ button.ghost, .btn.ghost { background: transparent; color: var(--ink); border: 1
 button.link { background: none; color: var(--accent); width: auto; padding: 6px 0; font-weight: 500; }
 .row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; gap: 12px; flex-wrap: wrap; }
 .error { color: var(--danger); font-size: .92rem; min-height: 1.4em; margin: 10px 0 0; }
-.cf-turnstile { margin-top: 16px; }
+.codebox { text-align: center; background: var(--bg); border: 1px dashed var(--line); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+.codebox .big { font-size: 2rem; font-weight: 600; letter-spacing: .25em; font-variant-numeric: tabular-nums; }
+.codebox .hint { margin-top: 4px; }
+.waiting { display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); font-size: .92rem; margin-top: 16px; }
+.spin { width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .stack { display: grid; gap: 10px; }
 .note { background: var(--accent-soft); border-radius: 12px; padding: 14px 16px; font-size: .94rem; margin-bottom: 20px; }
 .note ol { margin: 8px 0 0; padding-left: 20px; }
@@ -218,36 +219,27 @@ footer { text-align: center; color: var(--muted); font-size: .82rem; padding: 0 
   </section>
 
   <section class="card" aria-live="polite">
-    <!-- 1. number -->
-    <form id="sPhone" novalidate>
+    <!-- 1. login: the person messages the bot -->
+    <div id="sStart">
       <h2>Criar ou acessar minha agenda</h2>
-      <p class="sub">É grátis. Te mando um código no WhatsApp pra confirmar o número.</p>
-      <div class="field">
-        <label for="phone">WhatsApp</label>
-        <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(11) 98765-4321" required>
-        <div class="hint">Fora do Brasil? Começa com + e o código do país.</div>
-      </div>
-      <button type="submit">Receber código</button>
-      <p class="error" id="ePhone" role="alert"></p>
-    </form>
+      <p class="sub">É grátis. Você entra mandando uma mensagem pro bot no WhatsApp: é assim que eu sei qual é o seu número.</p>
+      <button type="button" id="start">Entrar com WhatsApp</button>
+      <p class="error" id="eStart" role="alert"></p>
+    </div>
 
-    <!-- 2. code -->
-    <form id="sCode" novalidate hidden>
-      <h2>Confere o WhatsApp</h2>
-      <p class="sub">Mandei um código de 6 dígitos pra <strong id="to"></strong>.</p>
-      <div class="field">
-        <label for="code">Código</label>
-        <input id="code" class="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required>
+    <div id="sWait" hidden>
+      <h2>Manda a mensagem</h2>
+      <p class="sub">Abre o WhatsApp e envia a mensagem que já vai estar escrita. Depois volta aqui.</p>
+      <div class="codebox">
+        <div class="big" id="code"></div>
+        <div class="hint">Vale por 10 minutos</div>
       </div>
-      <button type="submit">Entrar</button>
-      <p class="error" id="eCode" role="alert"></p>
-      <div class="row">
-        <button type="button" class="link" id="back">← Trocar número</button>
-        <button type="button" class="link" id="resend">Mandar de novo</button>
-      </div>
-    </form>
-
-    <div id="ts">${turnstile}</div>
+      <a class="btn" id="wa" href="#" target="_blank" rel="noopener">Abrir WhatsApp</a>
+      <div class="waiting" id="waiting"><span class="spin" aria-hidden="true"></span> Esperando sua mensagem…</div>
+      <p class="small">No computador? O link abre o WhatsApp Web. Ou manda <strong id="waText"></strong> pro número do bot.</p>
+      <p class="error" id="eWait" role="alert"></p>
+      <div class="row"><button type="button" class="link" id="restart" hidden>Gerar outro código</button></div>
+    </div>
 
     <!-- 3a. new user: where the agenda lives -->
     <div id="sChoose" hidden>
@@ -352,14 +344,14 @@ footer { text-align: center; color: var(--muted); font-size: .82rem; padding: 0 
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const SCREENS = ["sPhone", "sCode", "sChoose", "sICloud", "sPick", "sAccount", "sDeleted"];
-  const S = { phone: "", token: "", account: null, login: null };
+  const SCREENS = ["sStart", "sWait", "sChoose", "sICloud", "sPick", "sAccount", "sDeleted"];
+  const S = { token: "", account: null, login: null, poll: null };
   const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ""; } })();
   const GENERIC = "Algo deu errado. Tenta de novo.";
 
   function show(id, focus) {
     SCREENS.forEach((s) => ($(s).hidden = s !== id));
-    $("ts").hidden = id !== "sPhone" && id !== "sCode";
+    if (id !== "sWait") stopPolling();
     document.querySelectorAll(".error").forEach((e) => (e.textContent = ""));
     if (focus) $(focus).focus();
   }
@@ -390,17 +382,12 @@ footer { text-align: center; color: var(--muted); font-size: .82rem; padding: 0 
     } catch (e) {
       if (e instanceof Expired) {
         S.token = "";
-        show("sPhone", "phone");
-        $("ePhone").textContent = e.message;
+        show("sStart");
+        $("eStart").textContent = e.message;
       } else errEl.textContent = e.message;
     } finally {
       btn.disabled = false;
     }
-  }
-
-  function pretty(d) {
-    const m = d.match(/^55(\\d{2})(\\d{4,5})(\\d{4})$/);
-    return m ? "(" + m[1] + ") " + m[2] + "-" + m[3] : "+" + d;
   }
 
   function showAccount(acc, fresh) {
@@ -409,7 +396,7 @@ footer { text-align: center; color: var(--muted); font-size: .82rem; padding: 0 
     $("hello").textContent = fresh ? "Pronto! 🎉" : first ? "Oi, " + first + " 👋" : "Oi 👋";
     $("helloSub").innerHTML = fresh
       ? "Te mandei uma mensagem no WhatsApp. Responde lá: <em>dentista sexta 15h</em>."
-      : "Sua agenda funciona pelo WhatsApp, no mesmo número que te mandou o código.";
+      : "Sua agenda funciona pelo WhatsApp, na mesma conversa em que você mandou o código.";
     const local = acc.storage === "local";
     $("accLocal").hidden = !local;
     $("accICloud").hidden = local;
@@ -426,54 +413,64 @@ footer { text-align: center; color: var(--muted); font-size: .82rem; padding: 0 
     show("sAccount");
   }
 
-  /* 1. number */
-  async function sendCode(btn, errEl) {
+  /* 1. login: get a code, the person sends it to the bot, poll until it arrives */
+  function stopPolling() {
+    if (S.poll) clearTimeout(S.poll.timer);
+    S.poll = null;
+  }
+
+  function codeDead(message) {
+    stopPolling();
+    $("waiting").hidden = true;
+    $("eWait").textContent = message;
+    $("restart").hidden = false;
+  }
+
+  async function check() {
+    const p = S.poll;
+    if (!p) return;
+    let out = null;
+    try {
+      const res = await fetch("/signup/status?id=" + encodeURIComponent(p.id));
+      out = await res.json();
+      if (!res.ok || !out.ok) return codeDead(out.error || GENERIC);
+    } catch {
+      out = null; // network blip: try again
+    }
+    if (S.poll !== p) return;
+    if (out && out.status === "ok") {
+      stopPolling();
+      S.token = out.token;
+      if (out.account) showAccount(out.account, false);
+      else show("sChoose", "name");
+      return;
+    }
+    if ((out && out.status === "expired") || Date.now() > p.expiresAt) return codeDead("O código expirou. Gera outro.");
+    p.timer = setTimeout(check, document.hidden ? 5000 : 2000);
+  }
+
+  async function start(btn, errEl) {
     await run(btn, errEl, async () => {
-      try {
-        const turnstile = window.turnstile ? window.turnstile.getResponse() : undefined;
-        const out = await post("/signup/code", { phone: S.phone, turnstile });
-        S.phone = "+" + out.phone;
-        $("to").textContent = pretty(out.phone);
-        $("code").value = "";
-        show("sCode", "code");
-      } finally {
-        if (window.turnstile) window.turnstile.reset();
-      }
+      const out = await post("/signup/start");
+      show("sWait");
+      $("code").textContent = out.code;
+      $("waText").textContent = out.text;
+      $("wa").href = out.link;
+      $("waiting").hidden = false;
+      $("restart").hidden = true;
+      S.poll = { id: out.id, expiresAt: out.expiresAt, timer: setTimeout(check, 2000) };
     });
   }
 
-  $("sPhone").addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    S.phone = $("phone").value.trim();
-    if (!S.phone) return ($("ePhone").textContent = "Coloca teu número de WhatsApp."), $("phone").focus();
-    sendCode($("sPhone").querySelector("button"), $("ePhone"));
+  $("start").addEventListener("click", (ev) => start(ev.currentTarget, $("eStart")));
+  $("restart").addEventListener("click", (ev) => start(ev.currentTarget, $("eWait")));
+  // Back from WhatsApp: check right away instead of waiting for the timer.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && S.poll) {
+      clearTimeout(S.poll.timer);
+      check();
+    }
   });
-
-  /* 2. code */
-  $("code").addEventListener("input", (ev) => {
-    ev.target.value = ev.target.value.replace(/\\D/g, "").slice(0, 6);
-    if (ev.target.value.length === 6) $("sCode").requestSubmit();
-  });
-
-  $("sCode").addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    const code = $("code").value;
-    if (code.length !== 6) return ($("eCode").textContent = "O código tem 6 dígitos.");
-    run($("sCode").querySelector("button[type=submit]"), $("eCode"), async () => {
-      try {
-        const out = await post("/signup/verify", { phone: S.phone, code });
-        S.token = out.token;
-        if (out.account) showAccount(out.account, false);
-        else show("sChoose", "name");
-      } catch (e) {
-        $("code").select();
-        throw e;
-      }
-    });
-  });
-
-  $("back").addEventListener("click", () => show("sPhone", "phone"));
-  $("resend").addEventListener("click", (ev) => sendCode(ev.currentTarget, $("eCode")));
 
   /* 3. new user: bot or iCloud */
   function needName() {

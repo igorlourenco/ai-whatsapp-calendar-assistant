@@ -4,7 +4,8 @@ import type { CategoryConfig, ExportData } from "./debug";
 import { portal } from "./portal";
 import { registry, scheduler, type Inbound } from "./scheduler";
 import { hasInvite, welcome } from "./users";
-import { canonPhone, samePhone, type ZapiReceived } from "./zapi";
+import { loginCodeIn } from "./signup";
+import { canonPhone, samePhone, sendText, type ZapiReceived } from "./zapi";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -38,6 +39,16 @@ app.post("/webhooks/zapi", async (c) => {
   // on messageId) before we ack, then processes it with retries. If that
   // fails we return 500 so Z-API redelivers.
   try {
+    // Signup page login ("Entrar na agenda: K7M2QX"): bind this number to the
+    // page that showed the code. Answered here, never seen by the model.
+    const login = samePhone(body.phone, env.OWNER_PHONE) ? null : loginCodeIn(msg.text);
+    if (login && (await registry(env).loginClaim(login, body.phone))) {
+      await sendText(env, body.phone, "✅ Pronto! Volta pra página pra continuar.\n\nSe não foi você que abriu a página, ignora esta mensagem.").catch((err) =>
+        console.error("[webhook] login reply failed", err),
+      );
+      console.log("[webhook] login claimed", canonPhone(body.phone));
+      return c.json({ ok: true, login: true });
+    }
     if (!samePhone(body.phone, env.OWNER_PHONE)) {
       // Everyone else: registered users, or someone sending the invite code.
       // Anyone else is ignored without touching their object.
