@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 
+import { suggestEmoji } from "../../src/worker/calendar/emoji";
 import { slugify } from "../../src/worker/calendar/store";
 import type { RemoteCalendar } from "../../src/worker/icloud/caldav";
 
@@ -26,16 +27,6 @@ export type Io = {
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
-const EMOJI_HINTS: [RegExp, string][] = [
-  [/work|trabalho|job|office|empresa/i, "💼"],
-  [/school|faculdade|uni|college|escola|estudo|study/i, "🎓"],
-  [/personal|pessoal|home|casa/i, "🏠"],
-  [/family|fam[ií]lia|kids|filhos/i, "👨‍👩‍👧"],
-  [/gym|academia|sport|esporte|treino/i, "🏋️"],
-  [/health|sa[uú]de|m[eé]dico|doctor/i, "🩺"],
-  [/birthday|anivers/i, "🎂"],
-];
-const suggestEmoji = (name: string) => EMOJI_HINTS.find(([re]) => re.test(name))?.[1] ?? "📅";
 const titleCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** Interactive: which iCloud calendars become categories (name, emoji, description, default). */

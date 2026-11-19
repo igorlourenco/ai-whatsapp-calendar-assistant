@@ -184,8 +184,21 @@ export class Scheduler extends DurableObject<Env> {
   }
 
   /** Has this object been set up (and how)? For the signup page. */
-  async storageKind(): Promise<"icloud" | "local" | null> {
-    return (await this.profile())?.storage ?? null;
+  async accountSummary(): Promise<{ storage: "icloud" | "local"; name: string | null } | null> {
+    const p = await this.profile();
+    return p ? { storage: p.storage, name: p.name } : null;
+  }
+
+  /**
+   * Delete everything this user has in the bot (signup page, "excluir conta"):
+   * tasks, events, settings, inbox, stored iCloud login. The object restarts
+   * empty. Events in the user's own iCloud are not touched.
+   */
+  async wipe(): Promise<void> {
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    // Restart so the next request re-runs the migrations on an empty database.
+    setTimeout(() => this.ctx.abort("account deleted"), 50);
   }
 
   /** This user's events as an ICS feed (guests only; null for the owner). */
@@ -224,7 +237,7 @@ export class Scheduler extends DurableObject<Env> {
    * the chosen calendars and moves any events the user had in the bot's
    * SQLite into iCloud. Safe to re-run (e.g. new app password).
    */
-  async connectICloud(m: { phone: string; name: string | null; username: string; password: string; categories: CategoryConfig[] }) {
+  async connectICloud(m: { phone: string; name: string | null; username: string; password: string; categories: CategoryConfig[]; tz?: string | null }) {
     const account = { ICLOUD_USERNAME: m.username, ICLOUD_APP_PASSWORD: m.password };
     await calendarHome(account); // throws on a bad login: nothing changes
     const { rows } = categoryRows(m.categories);
@@ -234,7 +247,13 @@ export class Scheduler extends DurableObject<Env> {
     const local = before?.storage === "local" ? await sqliteStore(this.sqlDb, userSettings(this.env, before).tz, 30).allRows() : [];
     const oldCats = await this.db.select().from(schema.categories);
     // Send address as given (not canonPhone: WhatsApp may need the BR 9th digit).
-    const values = { phone: digits(m.phone), name: m.name ?? before?.name ?? null, storage: "icloud" as const, icloudCredentials: sealed };
+    const values = {
+      phone: digits(m.phone),
+      name: m.name ?? before?.name ?? null,
+      storage: "icloud" as const,
+      icloudCredentials: sealed,
+      ...(m.tz && !before?.tz ? { tz: m.tz } : {}),
+    };
     this.ctx.storage.transactionSync(() => {
       this.db.insert(schema.profile).values({ id: 1, ...values }).onConflictDoUpdate({ target: schema.profile.id, set: values }).run();
       this.db.delete(schema.categories).run();
