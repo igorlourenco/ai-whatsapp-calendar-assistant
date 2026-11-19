@@ -29,9 +29,13 @@ describe("whose iCloud", () => {
   const env = { ICLOUD_USERNAME: "owner@x.com", ICLOUD_APP_PASSWORD: "owner-pass", CREDENTIALS_KEY: KEY } as unknown as Env;
   const base = { id: 1, phone: "556300000000", name: "Ana", storage: "icloud", tz: null, morningAt: null, eveningAt: null, defaultReminder: null, feedUrl: null, createdAt: new Date() };
 
-  it("owner (no profile or no credentials) → deployment's iCloud", async () => {
+  it("owner (no profile, or one without a phone) → deployment's iCloud", async () => {
     expect(await icloudAccount(env, null)).toBe(env);
-    expect(await icloudAccount(env, { ...base, icloudCredentials: null } as Profile)).toBe(env);
+    expect(await icloudAccount(env, { ...base, phone: null, icloudCredentials: null } as Profile)).toBe(env);
+  });
+
+  it("a user's object without credentials never falls back to the owner's iCloud", async () => {
+    await expect(icloudAccount(env, { ...base, icloudCredentials: null } as Profile)).rejects.toThrow(/without iCloud credentials/);
   });
 
   it("user with credentials → their own iCloud", async () => {

@@ -9,6 +9,8 @@ import { isGuest, userSettings } from "./users";
 
 /** Whose iCloud: the user's own (encrypted in their profile), else the deployment's (owner). */
 export async function icloudAccount(env: Env, p: Profile | null): Promise<ICloudEnv> {
+  // Only the owner's object has no phone of its own; a user's object must never fall back to the owner's iCloud.
+  if (p?.phone && !p.icloudCredentials) throw new Error("user object without iCloud credentials");
   if (!p?.icloudCredentials) return env;
   const { username, password } = JSON.parse(await open(env.CREDENTIALS_KEY, p.icloudCredentials)) as { username: string; password: string };
   return { ICLOUD_USERNAME: username, ICLOUD_APP_PASSWORD: password };
