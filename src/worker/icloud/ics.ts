@@ -52,13 +52,31 @@ function firstAlarmMinutes(vevent: ICAL.Component): number | null {
   return null;
 }
 
+/** Set on events the user asked (through the bot) to have no reminder. */
+const NO_REMINDER_PROP = "x-wpp-reminder";
+const OUR_PRODID = "-//ai-assistant-wpp//PT-BR";
+
+/**
+ * Minutes before start to remind. An alert set on the event wins. With none,
+ * events made elsewhere (e.g. the iPhone, whose default is "no alert") still
+ * get `fallback`, so they aren't silently skipped; only an explicit "sem
+ * lembrete" through the bot (marker, or an object we built) means none.
+ */
+function reminderOf(root: ICAL.Component, vevent: ICAL.Component, allDay: boolean, fallback: number | null | undefined): number | null {
+  if (allDay) return null;
+  const alarm = firstAlarmMinutes(vevent);
+  if (alarm != null) return alarm;
+  if (vevent.hasProperty(NO_REMINDER_PROP) || root.getFirstPropertyValue("prodid") === OUR_PRODID) return null;
+  return fallback || null;
+}
+
 function text(v: ICAL.Component, name: string): string | null {
   const val = v.getFirstPropertyValue(name);
   return typeof val === "string" && val.trim() ? val : null;
 }
 
 /** Expand a VCALENDAR object into occurrences overlapping [from, to). */
-export function parseOccurrences(ics: string, from: Date, to: Date, tz: string): ParsedOccurrence[] {
+export function parseOccurrences(ics: string, from: Date, to: Date, tz: string, fallbackReminder?: number | null): ParsedOccurrence[] {
   const root = new ICAL.Component(ICAL.parse(ics));
   registerTimezones(root);
   const vevents = root.getAllSubcomponents("vevent");
@@ -68,6 +86,7 @@ export function parseOccurrences(ics: string, from: Date, to: Date, tz: string):
   const event = new ICAL.Event(master);
   for (const ex of vevents) if (ex !== master && ex.hasProperty("recurrence-id")) event.relateException(ex);
 
+  const masterReminder = reminderOf(root, master, event.startDate.isDate, fallbackReminder);
   const base = {
     uid: event.uid,
     recurring: event.isRecurring(),
@@ -85,7 +104,8 @@ export function parseOccurrences(ics: string, from: Date, to: Date, tz: string):
       allDay,
       location: text(item.component, "location"),
       notes: text(item.component, "description"),
-      reminderMinutes: allDay ? null : firstAlarmMinutes(item.component),
+      // A moved occurrence without its own alert keeps the series' one.
+      reminderMinutes: allDay ? null : item.component === master ? masterReminder : (firstAlarmMinutes(item.component) ?? masterReminder),
     };
   };
 
@@ -199,11 +219,12 @@ function veventLines(ev: NewEvent, tz: string, now: Date, extra: string[] = []):
           "END:VALARM",
         ]
       : []),
+    ...(!ev.allDay && ev.reminderMinutes == null ? ["X-WPP-REMINDER:NONE"] : []),
     "END:VEVENT",
   ];
 }
 
-const HEADER = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//ai-assistant-wpp//PT-BR", "CALSCALE:GREGORIAN"];
+const HEADER = ["BEGIN:VCALENDAR", "VERSION:2.0", `PRODID:${OUR_PRODID}`, "CALSCALE:GREGORIAN"];
 
 /**
  * Serialize a new event. One-off timed events are written in UTC (an exact
@@ -325,7 +346,9 @@ export function patchIcs(ics: string, patch: EventPatch, tz: string): string {
   }
   if (patch.reminderMinutes !== undefined) {
     for (const a of v.getAllSubcomponents("valarm")) v.removeSubcomponent(a);
-    if (patch.reminderMinutes !== null) {
+    v.removeAllProperties(NO_REMINDER_PROP);
+    if (patch.reminderMinutes === null) v.addPropertyWithValue(NO_REMINDER_PROP, "NONE");
+    else {
       const alarm = new ICAL.Component("valarm");
       alarm.addPropertyWithValue("action", "DISPLAY");
       alarm.addPropertyWithValue("description", String(v.getFirstPropertyValue("summary") ?? "Lembrete"));
@@ -413,7 +436,7 @@ function toRecurrence(recur: ICAL.Recur, tz: string): Recurrence {
   };
 }
 
-export function parseMaster(ics: string, tz: string): ParsedMaster | null {
+export function parseMaster(ics: string, tz: string, fallbackReminder?: number | null): ParsedMaster | null {
   const root = new ICAL.Component(ICAL.parse(ics));
   registerTimezones(root);
   const vevents = root.getAllSubcomponents("vevent");
@@ -435,7 +458,7 @@ export function parseMaster(ics: string, tz: string): ParsedMaster | null {
     location: text(master, "location"),
     notes: text(master, "description"),
     recurrence: rrule instanceof ICAL.Recur ? toRecurrence(rrule, tz) : null,
-    reminderMinutes: allDay ? null : firstAlarmMinutes(master),
+    reminderMinutes: reminderOf(root, master, allDay, fallbackReminder),
   };
 }
 

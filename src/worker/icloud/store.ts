@@ -88,7 +88,7 @@ export function icloudStore(env: ICloudEnv, db: Db, tz: string, defaultReminder:
   async function read(href: string) {
     const obj = await getObject(env, href);
     if (!obj) return null;
-    const master = parseMaster(obj.ics, tz);
+    const master = parseMaster(obj.ics, tz, defaultReminder);
     if (!master) return null;
     return { obj, master };
   }
@@ -140,10 +140,10 @@ export function icloudStore(env: ICloudEnv, db: Db, tz: string, defaultReminder:
         list.map(async (cat) => {
           const out: OccurrenceView[] = [];
           for (const obj of await queryEvents(env, cat.calendarUrl, from, to)) {
-            const master = parseMaster(obj.ics, tz);
+            const master = parseMaster(obj.ics, tz, defaultReminder);
             if (!master) continue;
             const base = toEvent(obj.href, master);
-            for (const o of parseOccurrences(obj.ics, from, to, tz)) {
+            for (const o of parseOccurrences(obj.ics, from, to, tz, defaultReminder)) {
               const event: StoreEvent = { ...base, title: o.title, location: o.location, notes: o.notes, reminderMinutes: o.reminderMinutes };
               if (q && ![event.title, event.notes ?? "", event.location ?? ""].some((t) => normText(t).includes(q))) continue;
               out.push({ event, category: cat, start: o.start, end: o.end });
