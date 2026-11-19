@@ -282,3 +282,25 @@ export const users = sqliteTable("users", {
 });
 
 export type User = typeof users.$inferSelect;
+
+/**
+ * Registry only: one-time codes for the signup page (GET /). One row per
+ * number; kept after use so the per-number send limit survives a signup.
+ */
+export const signupCodes = sqliteTable(
+  "signup_codes",
+  {
+    /** canonPhone. */
+    phone: text("phone").primaryKey(),
+    /** SHA-256 of "<phone>:<code>"; null once used. */
+    codeHash: text("code_hash"),
+    expiresAt: ts("expires_at").notNull(),
+    /** Wrong guesses against the current code. */
+    attempts: integer("attempts").notNull().default(0),
+    /** Codes sent since windowStart (rolling 24 h). */
+    sends: integer("sends").notNull().default(0),
+    windowStart: ts("window_start").notNull(),
+    lastSentAt: ts("last_sent_at").notNull(),
+  },
+  (t) => [index("signup_codes_window_idx").on(t.windowStart)],
+);
