@@ -80,6 +80,8 @@ export const actionSchema = z.discriminatedUnion("type", [
     recurrence: opt(recurrence),
     notes: opt(z.string()),
     category: opt(z.string()),
+    /** Saved with no date on purpose ("algum dia"): no "pra quando?", no nags. */
+    someday: opt(z.boolean()),
   }),
   z.object({ type: z.literal("complete_task"), ref: opt(z.string()), search: opt(z.string()) }),
   z.object({
@@ -92,6 +94,8 @@ export const actionSchema = z.discriminatedUnion("type", [
       due_time: opt(hhmm),
       notes: opt(z.string()),
       category: opt(z.string()),
+      /** Drop the date ("deixa sem data", "fica pra algum dia"). */
+      no_date: opt(z.boolean()),
     }),
   }),
   z.object({
@@ -128,6 +132,7 @@ function contextBlock(state: State): string {
     parts.push(`Tarefa incompleta aguardando a data:
 ${JSON.stringify({ ...d, due_time: start_time ?? null })}
 → Se a mensagem atual traz a data (ex: "hoje", "sexta", "amanhã 10h", "dia 20"), gere UM "create_task" com os campos acima + due_date (e due_time se disser hora).
+→ Se a resposta é que não tem data ("sem data", "não sei", "algum dia", "qualquer dia", "quando der", "deixa sem"), gere UM "create_task" com os campos acima + "someday":true e due_date null.
 → Se a mensagem atual é outro pedido, ignore o rascunho.`);
   } else if (state.draft) {
     parts.push(`Pedido incompleto aguardando dados (falta: data):
@@ -232,14 +237,16 @@ TAREFAS (to-dos) são diferentes de compromissos:
 - "me lembra X min/h antes" de um evento citado continua sendo update do evento (reminder_minutes), não tarefa.
 
 Tarefas usam as MESMAS categorias dos compromissos (são as "listas" de tarefas: "tarefas da faculdade" = categoria de estudos/faculdade, "de casa" = casa ou a [padrão] se não houver casa).
-7. Criar tarefa: {"type":"create_task","title":"Pagar boleto","due_date":"YYYY-MM-DD"|null,"due_time":"HH:mm"|null,"recurrence":null,"notes":null,"category":"slug"}
+7. Criar tarefa: {"type":"create_task","title":"Pagar boleto","due_date":"YYYY-MM-DD"|null,"due_time":"HH:mm"|null,"recurrence":null,"notes":null,"category":"slug","someday":false}
 - category: o slug que melhor encaixa (como nos compromissos; "tarefa de casa: …", "pro trabalho: …" decide). Lista citada que não existe ("põe na lista Mercado: …") → create_category antes.
 - Sem data → due_date null (o sistema pergunta "pra quando?"). Nunca invente data. Hora só se disser ("às 10h") — a partir dela o usuário é cobrado.
+- Algo pra fazer "algum dia", "um dia", "qualquer hora", "quando der", "sem pressa", "sem data", "não sei quando", "ideia: …", "quero um dia …" → someday true, due_date null, due_time null (fica na lista sem data e sem cobrança). Só someday true se a mensagem disser que não tem data/prazo.
 - Repete ("todo dia 5", "toda segunda") → recurrence como nos compromissos, due_date = próxima ocorrência.
 - title curto, verbo no infinitivo, primeira letra maiúscula, sem data/hora ("Ligar pro banco").
 8. Concluir tarefa ("feito", "paguei o boleto", "fiz a 2"): {"type":"complete_task","ref":"T1"|null,"search":"palavra-chave"|null}
 - "feito todas", "fiz tudo" → um complete_task para CADA T da lista de tarefas citadas. "feito 1 e 3" → T1 e T3.
-9. Alterar tarefa ("adia o boleto pra segunda", "muda a tarefa do banco pra 15h"): {"type":"update_task","ref":"T1"|null,"search":"palavra-chave"|null,"changes":{"title":null,"due_date":null,"due_time":null,"notes":null,"category":null}}
+9. Alterar tarefa ("adia o boleto pra segunda", "muda a tarefa do banco pra 15h"): {"type":"update_task","ref":"T1"|null,"search":"palavra-chave"|null,"changes":{"title":null,"due_date":null,"due_time":null,"notes":null,"category":null,"no_date":null}}
+- Tirar a data ("tira a data do boleto", "deixa sem data", "joga pra algum dia", "não tem prazo") → changes.no_date true.
 - "muda o relatório pra trabalho", "passa a 2 pra lista da faculdade" → changes.category = slug.
 9b. Mudar VÁRIAS tarefas de uma vez ("as atrasadas vou fazer às 13h", "passa todas as de hoje pra amanhã", "joga as pendências da faculdade pra sexta", "todas essas pra segunda 9h"): {"type":"update_tasks","which":"overdue"|"today"|"listed"|"all","category":"slug"|null,"changes":{"due_date":"YYYY-MM-DD"|null,"due_time":"HH:mm"|null}}
 - which: "atrasadas" = overdue; "as de hoje" = today; "essas"/"todas essas" logo após uma lista de tarefas citadas (T…) = listed; "todas as tarefas"/"todas as pendências" = all. category só se citar a lista ("da faculdade").

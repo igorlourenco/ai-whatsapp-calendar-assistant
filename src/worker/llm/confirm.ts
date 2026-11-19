@@ -87,6 +87,8 @@ function describeTask(t: Task, every: number, cat: StoreCategory | null): string
   if (t.dueDate) {
     lines.push(`🗓️ ${humanDatePt(t.dueDate)}${t.dueTime ? ` · ${t.dueTime}` : ""}`);
     if (every > 0) lines.push(`⏰ te cobro a cada ${every} min${t.dueTime ? ` a partir das ${t.dueTime}` : ""} até você dizer *feito*`);
+  } else {
+    lines.push("💭 sem data: fica na lista (_tarefas_) até você dizer *feito*, sem cobrança");
   }
   if (t.recurrence && t.dueDate) lines.push(`🔁 ${describeRecurrence(t.recurrence, t.dueDate)}`);
   if (t.notes) lines.push(`📝 ${t.notes}`);

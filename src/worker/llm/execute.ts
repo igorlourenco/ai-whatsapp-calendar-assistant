@@ -427,8 +427,9 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
       return null;
     }
     case "create_task": {
-      if (!a.due_date) {
-        // Every task needs a day (that's when the nagging starts): ask.
+      if (!a.due_date && !a.someday) {
+        // No day given: ask (that's when the nagging starts), unless the user
+        // said it has none ("algum dia"), which saves it undated.
         turn.next.draft = {
           kind: "task",
           title: a.title,
@@ -437,12 +438,12 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
           notes: a.notes ?? null,
           category: a.category ?? null,
         };
-        return `❓ *${a.title}*: pra quando? (ex: _hoje_, _sexta_, _amanhã 10h_)`;
+        return `❓ *${a.title}*: pra quando? (ex: _hoje_, _sexta_, _amanhã 10h_, ou _sem data_)`;
       }
       const input = {
         title: a.title,
         dueDate: a.due_date ?? null,
-        dueTime: a.due_time ?? null,
+        dueTime: a.due_date ? (a.due_time ?? null) : null,
         recurrence: cleanRecurrence(a.recurrence),
         notes: a.notes ?? null,
         category: await taskCategorySlug(ctx, a.category),
@@ -484,8 +485,11 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
         if (!slug) throw new UserError(`Não tenho a lista “${changes.category}”. Pra criar: _cria a categoria ${changes.category}_.`);
         patch.category = slug;
       }
-      if (changes.due_date) patch.dueDate = changes.due_date;
-      if (changes.due_time) {
+      if (changes.no_date && !changes.due_date) {
+        patch.dueDate = null;
+        patch.dueTime = null;
+      } else if (changes.due_date) patch.dueDate = changes.due_date;
+      if (changes.due_time && patch.dueDate !== null) {
         patch.dueTime = changes.due_time;
         // "muda pra 15h" on an undated task → today.
         if (!t.dueDate && !changes.due_date) patch.dueDate = localDate(new Date(), ctx.tz);

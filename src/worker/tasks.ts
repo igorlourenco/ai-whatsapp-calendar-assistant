@@ -88,7 +88,7 @@ export async function findDuplicateTask(db: Db, input: TaskInput): Promise<Task 
   );
 }
 
-export type TaskPatch = { title?: string; dueDate?: string; dueTime?: string | null; notes?: string | null; category?: string };
+export type TaskPatch = { title?: string; /** null = no date ("algum dia"). */ dueDate?: string | null; dueTime?: string | null; notes?: string | null; category?: string };
 
 export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<Task | null> {
   const cur = await getTask(db, id);
