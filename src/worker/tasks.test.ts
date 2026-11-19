@@ -192,6 +192,49 @@ describe("task lists (categories)", () => {
   });
 });
 
+describe("bulk task changes", () => {
+  let bctx: AppCtx;
+  let st: State = { draft: null, focus: [] };
+  const run = async (actions: Action[]) => {
+    const r = await executeActions(bctx, actions, st);
+    st = r.state;
+    return r.reply;
+  };
+  const due = async () => Object.fromEntries((await bctx.db.select().from(tasks)).map((t) => [t.title, `${t.dueDate} ${t.dueTime ?? ""}`.trim()]));
+
+  beforeAll(async () => {
+    bctx = { ...ctx, db: await memoryDb() };
+    await bctx.db.insert(tasks).values([
+      { id: "a", title: "Pesquisar culpa", dueDate: "2026-11-14" },
+      { id: "b", title: "Trabalho de TGP", dueDate: "2026-11-15", dueTime: "20:00" },
+      { id: "c", title: "Pagar luz", dueDate: "2026-11-16" },
+      { id: "d", title: "Ligar pro banco", dueDate: "2026-11-18" },
+    ]);
+  });
+
+  it("'as atrasadas vou fazer às 13h' → every overdue task to today 13:00, nothing else", async () => {
+    expect(await run([{ type: "update_tasks", which: "overdue", changes: { due_time: "13:00" } }])).toBe(
+      "✏️ *2 tarefas atualizadas*\n1. Pesquisar culpa — hoje 13:00\n2. Trabalho de TGP — hoje 13:00",
+    );
+    expect(await due()).toEqual({ "Pesquisar culpa": "2026-11-16 13:00", "Trabalho de TGP": "2026-11-16 13:00", "Pagar luz": "2026-11-16", "Ligar pro banco": "2026-11-18" });
+    expect(st.tasks?.map((t) => t.taskId)).toEqual(["a", "b"]);
+    expect(await run([{ type: "update_tasks", which: "overdue", changes: { due_time: "13:00" } }])).toBe("❓ Nenhuma tarefa atrasada.");
+  });
+
+  it("'passa as de hoje pra amanhã' keeps their times", async () => {
+    expect(await run([{ type: "update_tasks", which: "today", changes: { due_date: "2026-11-17" } }])).toMatch(/^✏️ \*3 tarefas atualizadas\*/);
+    expect(await due()).toMatchObject({ "Pesquisar culpa": "2026-11-17 13:00", "Pagar luz": "2026-11-17" });
+  });
+
+  it("'todas essas' uses the listed tasks; no change → asks when; past date refused", async () => {
+    st = { ...st, tasks: [{ taskId: "d", label: "Ligar pro banco" }], lastList: "tasks" };
+    expect(await run([{ type: "update_tasks", which: "listed", changes: {} }])).toBe("❓ Mudar a tarefa pra quando? (ex: _hoje 13h_, _amanhã_)");
+    expect(await run([{ type: "update_tasks", which: "listed", changes: { due_date: "2026-11-10" } }])).toContain("Essa data já passou");
+    await run([{ type: "update_tasks", which: "listed", changes: { due_date: "2026-11-20", due_time: "09:00" } }]);
+    expect((await due())["Ligar pro banco"]).toBe("2026-11-20 09:00");
+  });
+});
+
 describe("task nags off (the default)", () => {
   it("no nag line in the confirmation, and nothing is sent", async () => {
     const off: AppCtx = { ...ctx, db: await memoryDb(), taskNagMinutes: undefined };
