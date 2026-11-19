@@ -78,6 +78,34 @@ describe("parse Apple events", () => {
   });
 });
 
+describe("reminders on events without an alert", () => {
+  const strip = (ics: string) => ics.replace(/BEGIN:VALARM[\s\S]*?END:VALARM\r\n/g, "");
+  const appleNoAlert = strip(APPLE_WEEKLY);
+
+  it("iPhone event with no alert gets the default reminder (and its moved occurrence too)", () => {
+    expect(parseMaster(appleNoAlert, TZ, 30)!.reminderMinutes).toBe(30);
+    const occ = parseOccurrences(appleNoAlert, ...range("2026-11-16", "2026-11-24"), TZ, 30);
+    expect(occ.map((o) => o.reminderMinutes)).toEqual([30, 30]);
+    expect(parseMaster(appleNoAlert, TZ)!.reminderMinutes).toBeNull();
+    expect(parseMaster(appleNoAlert, TZ, 0)!.reminderMinutes).toBeNull();
+  });
+
+  it("an alert on the event wins; the moved occurrence inherits it", () => {
+    const occ = parseOccurrences(APPLE_WEEKLY, ...range("2026-11-16", "2026-11-24"), TZ, 30);
+    expect(occ.map((o) => o.reminderMinutes)).toEqual([15, 15]);
+  });
+
+  it("'sem lembrete' through the bot stays without reminder", () => {
+    const patched = patchIcs(APPLE_WEEKLY, { reminderMinutes: null }, TZ);
+    expect(parseMaster(patched, TZ, 30)!.reminderMinutes).toBeNull();
+    expect(parseMaster(patchIcs(patched, { reminderMinutes: 10 }, TZ), TZ, 30)!.reminderMinutes).toBe(10);
+    const ours = buildIcs({ uid: "WPP-9", title: "X", start: L("2026-11-20T14:00"), end: L("2026-11-20T15:00"), allDay: false, reminderMinutes: null }, TZ);
+    expect(parseMaster(ours, TZ, 30)!.reminderMinutes).toBeNull();
+    // Made by the bot before the marker existed: no alarm meant "sem lembrete" too.
+    expect(parseMaster(ours.replace("X-WPP-REMINDER:NONE\r\n", ""), TZ, 30)!.reminderMinutes).toBeNull();
+  });
+});
+
 describe("write", () => {
   const ours = buildIcs(
     {
