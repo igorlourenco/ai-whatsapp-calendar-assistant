@@ -43,3 +43,8 @@ WORKER_URL=
 # their own agenda (stored in the bot, shown on their phone via an ICS link),
 # tasks and shopping list. Letters/digits only, 4+ chars. Empty = nobody joins.
 INVITE_CODE=
+
+# Optional: Cloudflare Turnstile on the signup page (GET /). Create a widget
+# at dash.cloudflare.com → Turnstile with the worker's hostname.
+TURNSTILE_SITE_KEY=
+TURNSTILE_SECRET=
