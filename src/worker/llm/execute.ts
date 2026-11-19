@@ -13,6 +13,7 @@ import {
 import type { Db } from "../db/client";
 import { messageEvents, type FocusItem, type PendingPick, type Recurrence } from "../db/schema";
 import {
+  byDue,
   completeTask,
   groupTasks,
   taskCategory,
@@ -497,6 +498,48 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
       if (!row) throw new UserError("Essa tarefa não existe mais.");
       turn.writes.push({ kind: "task", action: "updated", taskId: t.id });
       return null;
+    }
+    case "update_tasks": {
+      const today = localDate(new Date(), ctx.tz);
+      const cats = await ctx.store.listCategories();
+      let list = await openTasks(ctx.db);
+      if (a.which === "overdue") list = list.filter((t) => t.dueDate && t.dueDate < today);
+      else if (a.which === "today") list = list.filter((t) => t.dueDate === today);
+      else if (a.which === "listed") {
+        const ids = turn.shownTasks.map((r) => r.taskId);
+        list = list.filter((t) => ids.includes(t.id));
+      }
+      let catName = "";
+      if (a.category) {
+        const slug = await taskCategorySlug(ctx, a.category, false);
+        const cat = cats.find((c) => c.slug === slug);
+        if (!cat) throw new UserError(`Não tenho a lista “${a.category}”.`);
+        list = list.filter((t) => taskCategory(t, cats)?.slug === cat.slug);
+        catName = ` de ${cat.emoji} ${cat.name}`;
+      }
+      const what = { overdue: "atrasada", today: "pra hoje", listed: "dessas", all: "aberta" }[a.which];
+      if (!list.length) return `❓ Nenhuma tarefa ${what}${catName}.`;
+      const c = stripNulls(a.changes);
+      if (!c.due_date && !c.due_time) {
+        turn.next.tasks = list.slice(0, 10).map((t) => toTaskRef(t, today));
+        turn.next.lastList = "tasks";
+        return `❓ Mudar ${list.length === 1 ? "a tarefa" : `as ${list.length} tarefas`} pra quando? (ex: _hoje 13h_, _amanhã_)`;
+      }
+      if (c.due_date && c.due_date < today) throw new UserError("Essa data já passou.");
+      for (const t of list) {
+        // Only a time: same day if it's still ahead, else today.
+        const dueDate = c.due_date ?? (t.dueDate && t.dueDate >= today ? t.dueDate : today);
+        const row = await updateTask(ctx.db, t.id, { dueDate, ...(c.due_time ? { dueTime: c.due_time } : {}) });
+        if (!row || row.dueDate !== dueDate || (c.due_time && row.dueTime !== c.due_time)) {
+          throw new Error(`write verification failed: task ${t.id} not moved`);
+        }
+      }
+      const rows = (await Promise.all(list.map((t) => getTask(ctx.db, t.id)))).filter((t): t is Task => !!t);
+      const { list: ordered } = groupTasks(rows.sort(byDue), cats);
+      turn.next.tasks = ordered.slice(0, 10).map((t) => toTaskRef(t, today));
+      turn.next.lastList = "tasks";
+      const n = ordered.length;
+      return `✏️ *${n} ${n === 1 ? "tarefa atualizada" : "tarefas atualizadas"}*\n${ordered.map((t, i) => `${i + 1}. ${taskLine(t, today)}`).join("\n")}`;
     }
     case "delete_task": {
       const t = await resolveTask(ctx, a, turn, { action: "delete_task" });

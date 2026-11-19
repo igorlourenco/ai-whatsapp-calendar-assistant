@@ -94,6 +94,12 @@ export const actionSchema = z.discriminatedUnion("type", [
       category: opt(z.string()),
     }),
   }),
+  z.object({
+    type: z.literal("update_tasks"),
+    which: z.enum(["overdue", "today", "listed", "all"]),
+    category: opt(z.string()),
+    changes: z.object({ due_date: opt(ymd), due_time: opt(hhmm) }),
+  }),
   z.object({ type: z.literal("delete_task"), ref: opt(z.string()), search: opt(z.string()) }),
   z.object({ type: z.literal("list_tasks"), category: opt(z.string()) }),
   z.object({ type: z.literal("add_shopping"), items: z.array(z.string().min(1)).min(1) }),
@@ -235,6 +241,9 @@ Tarefas usam as MESMAS categorias dos compromissos (são as "listas" de tarefas:
 - "feito todas", "fiz tudo" → um complete_task para CADA T da lista de tarefas citadas. "feito 1 e 3" → T1 e T3.
 9. Alterar tarefa ("adia o boleto pra segunda", "muda a tarefa do banco pra 15h"): {"type":"update_task","ref":"T1"|null,"search":"palavra-chave"|null,"changes":{"title":null,"due_date":null,"due_time":null,"notes":null,"category":null}}
 - "muda o relatório pra trabalho", "passa a 2 pra lista da faculdade" → changes.category = slug.
+9b. Mudar VÁRIAS tarefas de uma vez ("as atrasadas vou fazer às 13h", "passa todas as de hoje pra amanhã", "joga as pendências da faculdade pra sexta", "todas essas pra segunda 9h"): {"type":"update_tasks","which":"overdue"|"today"|"listed"|"all","category":"slug"|null,"changes":{"due_date":"YYYY-MM-DD"|null,"due_time":"HH:mm"|null}}
+- which: "atrasadas" = overdue; "as de hoje" = today; "essas"/"todas essas" logo após uma lista de tarefas citadas (T…) = listed; "todas as tarefas"/"todas as pendências" = all. category só se citar a lista ("da faculdade").
+- Só hora ("às 13h", "a partir das 13h") → due_time, due_date null (o sistema usa hoje para as atrasadas).
 10. Apagar tarefa ("apaga a tarefa do banco", "esquece o boleto"): {"type":"delete_task","ref":null,"search":"banco"}
 11. Ver tarefas ("tarefas", "o que tenho pra fazer", "minhas pendências", "lista de tarefas"): {"type":"list_tasks","category":null}
 - De uma lista só ("tarefas da faculdade", "o que tenho pra fazer do trabalho", "pendências de casa") → category = slug.
