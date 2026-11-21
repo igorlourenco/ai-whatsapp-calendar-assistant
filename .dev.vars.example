@@ -11,7 +11,8 @@ ZAPI_INSTANCE_ID=
 ZAPI_TOKEN=
 ZAPI_CLIENT_TOKEN=
 
-# Your WhatsApp number with country code. Only this number talks to the bot.
+# Your WhatsApp number with country code. Only this number (and the users
+# you add with POST /debug/users) talks to the bot.
 OWNER_PHONE=+55 11 91234 5678
 
 # --- iCloud (events live in your Apple Calendar) --------------------------
@@ -38,12 +39,3 @@ ZAPI_WEBHOOK_TOKEN=
 DEBUG_TOKEN=
 # Your deployed worker URL (filled after the first deploy).
 WORKER_URL=
-
-# Multi-user: anyone who sends this code to the bot joins as a user, with
-# their own agenda (stored in the bot, shown on their phone via an ICS link),
-# tasks and shopping list. Letters/digits only, 4+ chars. Empty = nobody joins.
-INVITE_CODE=
-
-# Optional: the bot's own WhatsApp number (the Z-API one), for the signup
-# page's wa.me link. Empty = asked to Z-API while the instance is connected.
-BOT_PHONE=

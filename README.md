@@ -32,8 +32,8 @@ bot:  🗓️ Terça, 17 de novembro
 - **Categories = iCloud calendars** (e.g. Work 💼, School 🎓, Personal 🏠), each with an emoji and a description the AI uses to pick one.
 - **Tasks (to-dos), in lists.** "me lembra de pagar o boleto sexta", "ligar pro banco amanhã 10h", "pagar aluguel todo dia 5". A task with no date gets a "pra quando?"; for things with no deadline say so ("algum dia quero aprender violão", "trocar o filtro do ar, sem data", or answer `sem data` to the question) and it stays on the list undated, without nags or digests, until `feito`. `deixa o banco sem data` takes the date off one. Tasks show up in the morning digest. Nagging is **off by default**: `me cobra das tarefas a cada 30 min` turns it on (any interval, min 5 min), `para de me cobrar` turns it off. When on, from its time (or one interval after the morning digest, for date-only tasks) you get a WhatsApp message every N min listing what's still pending, until you answer `feito`. Overdue tasks keep nagging the next days; nothing is sent after 22:00. Tasks use the same categories as events, so each category is also a task list: "entregar trabalho de penal sexta" lands in 🎓 Estudos, `tarefa de casa: trocar lâmpada` / `põe na lista Mercado: …` pick (or create) one. `tarefas` lists them grouped by list (numbering continues across groups), `tarefas da faculdade` shows one list, `muda o relatório pra trabalho` moves one, `feito 2` / `feito todas` / `paguei o boleto` checks off (a repeating one moves to its next date), `adia o banco pra sexta` reschedules, and several at once: `as atrasadas vou fazer às 13h`, `passa as de hoje pra amanhã`, `joga as da faculdade pra sexta`, `todas essas pra segunda 9h`.
 - **Shopping list.** "compra leite, ovos e pão", "acabou o café" → one list, no dates, no nags. `lista` shows it, `comprei o leite` / `comprei tudo` checks off, `tira o café da lista` removes. A purchase with a date ("comprar presente da Ana até sexta") or "me lembra de…" stays a task.
-- **Anyone can sign up.** The worker's root URL is a signup page: the person taps *Entrar com WhatsApp*, sends the pre-filled message (`Entrar na agenda: K7M2QX`) to the bot, comes back and picks where their agenda lives: in the bot (calendar link shown on the page) or **their own iCloud** (Apple ID + app-specific password, then which calendars become categories). The same message logs existing users into their account, where they can switch to iCloud, change the app password/calendars or **delete their account** (wipes everything the bot keeps for them; iCloud events stay). Sending the invite code (`INVITE_CODE`) to the bot's number also works. Every user gets with their own agenda, tasks, shopping list, digests and reminders, fully separate from yours. Their events live in the bot and show up on their phone through a read-only calendar link (iPhone: tap → *Assinar*; Google Calendar: *Add calendar → From URL*). `resumo às 8h`, `lembrete padrão 1h antes`, `moro em Lisboa` change their own settings; `link da agenda` re-sends the link.
-- **…or with their own iCloud, two-way.** From the signup page, or `pnpm connect-icloud` (you, from the terminal, with their Apple ID and an app-specific password), connects someone's iCloud just like yours: what the bot saves shows up in their Apple Calendar and what they add there, the bot sees. The password goes from your terminal to the worker over HTTPS, is stored AES-GCM-encrypted (`CREDENTIALS_KEY`), and never passes through WhatsApp or the model. No invite code needed; events they already had in the bot are moved into their iCloud.
+- **Private: only people you add.** There is no public signup. `pnpm db add-user 5511987654321 "Ana"` gives someone access (silently: the bot never writes first, so tell them to message it). Every user gets their own agenda, tasks, shopping list, digests and reminders, fully separate from yours. Their events live in the bot and show up on their phone through a read-only calendar link (iPhone: tap → *Assinar*; Google Calendar: *Add calendar → From URL*). `resumo às 8h`, `lembrete padrão 1h antes`, `moro em Lisboa` change their own settings; `link da agenda` re-sends the link.
+- **…or with their own iCloud, two-way.** `pnpm connect-icloud` (you, from the terminal, with their Apple ID and an app-specific password), connects someone's iCloud just like yours: what the bot saves shows up in their Apple Calendar and what they add there, the bot sees. The password goes from your terminal to the worker over HTTPS, is stored AES-GCM-encrypted (`CREDENTIALS_KEY`), and never passes through WhatsApp or the model. Registers them if needed; events they already had in the bot are moved into their iCloud.
 - **Photos and screenshots.** Send an exam schedule, an event flyer, a chat screenshot or a photo of a note: the bot reads it and replies with a numbered preview (`📷 Encontrei 4 eventos… Salvo? sim / não / 1,3`). Nothing from an image is saved until you confirm.
 - **Voice notes.** Talk instead of typing: the bot transcribes the audio (Whisper on Workers AI), echoes what it heard (`🎤 _marca dentista sexta às 15h_`) and handles it exactly like a typed message, including answering an image preview (`sim`, `só o dois`). Deletes still need an explicit word ("cancela", "apaga"), so a misheard note can't remove anything.
 - **Follow-ups without a chat log.** "marca oftalmo" → "❓ qual dia?" → "dia 10 às 15h". "muda pra 16h" / "apaga esse" right after saving. "Achei 2… qual?" → "o 2".
@@ -43,7 +43,7 @@ bot:  🗓️ Terça, 17 de novembro
 ## How it works
 
 ```
-WhatsApp ─▶ Z-API ─▶ POST /webhooks/zapi?token=…  (OWNER_PHONE + users who sent INVITE_CODE)
+WhatsApp ─▶ Z-API ─▶ POST /webhooks/zapi?token=…  (OWNER_PHONE + users you added)
                          │      "registry" object: who joined + their calendar-feed tokens
                          ▼
           Scheduler Durable Object, one per person (embedded SQLite)
@@ -129,8 +129,6 @@ Set in `.dev.vars`, uploaded by `pnpm configure` (defaults in `src/worker/config
 | `TASK_NAG_MINUTES` | `0` | Pending tasks are re-sent every N minutes (min 5); `0` = off. Each user can override it by message |
 | `TASK_NAG_UNTIL` | `22:00` | No task nags after this time; they resume after the morning digest |
 | `CREDENTIALS_KEY` | *(generated)* | 32 bytes base64. Encrypts users' iCloud passwords. Never change it after connecting someone (they'd need `pnpm connect-icloud` again) |
-| `INVITE_CODE` | *(empty)* | Letters/digits, 4+ chars. Whoever sends it to the bot joins as a user. Empty = nobody joins by message (the signup page still works) |
-| `BOT_PHONE` | *(asked to Z-API)* | The bot's own number, for the signup page's wa.me link. Only needed if Z-API's device lookup fails |
 
 Everyone starts with these settings (and Pessoal/Trabalho/Estudos categories) and can change their own by message: `resumo às 8h`, `prévia às 22h`, `lembrete padrão 15 min antes`, `me cobra das tarefas a cada 20 min` / `para de me cobrar`, `meu fuso é Lisboa`, `minhas configurações`.
 
@@ -146,7 +144,8 @@ pnpm db "select * from inbound_messages order by received_at desc limit 5"
 pnpm db export > backup.json                   # full JSON dump
 pnpm db import backup.json                     # insert-only: never overwrites or deletes
 pnpm db restore 2026-11-16T12:00:00Z --yes     # point-in-time restore (≤ 30 days back)
-pnpm db users                                  # who joined (invite code or connect-icloud)
+pnpm db users                                  # who has access besides you
+pnpm db add-user 5511987654321 "Ana"           # give someone access (agenda in the bot)
 pnpm connect-icloud                            # connect someone's own iCloud (two-way); re-run to change password/calendars
 DB_USER=5511987654321 pnpm db state            # any command above, on another user's object
 curl -X DELETE -H "Authorization: Bearer $DEBUG_TOKEN" $WORKER_URL/debug/users/5511987654321   # revoke
@@ -177,7 +176,7 @@ Map of the code:
 |---|---|
 | `src/worker/index.ts` | Webhook, `/debug/*`, daily watchdog cron |
 | `src/worker/scheduler.ts` | The Durable Object (one per user, plus "registry"): SQLite + migrations, inbox, alarm, join, ICS feed, ops |
-| `src/worker/users.ts` | Multi-user: registry, invite code, per-user profile and settings |
+| `src/worker/users.ts` | Multi-user: registry, per-user profile and settings |
 | `src/worker/secrets.ts` | AES-GCM for per-user iCloud credentials |
 | `scripts/connect-icloud.ts` | Terminal flow to connect someone's iCloud (validates login, picks calendars) |
 | `src/worker/llm/extract.ts` | Prompt + action schema (the only thing the model does) |
@@ -194,8 +193,8 @@ Map of the code:
 
 ## Security & privacy
 
-- Only `OWNER_PHONE` and registered users (signup page or `INVITE_CODE`) are served; everyone else, groups, broadcasts and outgoing messages are ignored without touching any storage. Each user's data lives in their own Durable Object.
-- **The bot never writes first.** WhatsApp restricts numbers that start chats with strangers ("Your account is restricted… can't start new chats"), which is what sending login codes to typed-in numbers caused. So signup is WhatsApp-first: the page shows a code, the person sends it to the bot, and the webhook binds that sender to the page (single use, 10 min). Every message the bot sends is in a chat the person opened. The login gives the page a 30-min session (HMAC-signed with `CREDENTIALS_KEY`, sent as a bearer header) needed to connect iCloud or delete the account. An app-specific password typed on the page goes over HTTPS straight to the user's object, is stored AES-GCM-encrypted and never logged; calendars are only accepted from that account's own listing.
+- Only `OWNER_PHONE` and users you added (`pnpm db add-user` / `pnpm connect-icloud`) are served; everyone else, groups, broadcasts and outgoing messages are ignored without touching any storage. Each user's data lives in their own Durable Object.
+- **The bot never writes first.** WhatsApp restricts numbers that start chats with strangers ("Your account is restricted… can't start new chats"). Every message the bot sends is in a chat the person opened; adding a user sends nothing.
 - A guest's calendar link is a secret URL (160-bit token): anyone holding it can read that agenda. Revoking the user (see Operations) kills the link.
 - The webhook URL carries a random secret, and `/debug/*` needs a bearer token (constant-time compared).
 - The iCloud app-specific password grants calendar access to *your own* worker only; revoke it anytime at account.apple.com.
@@ -206,7 +205,7 @@ Map of the code:
 
 - Brazilian Portuguese only.
 - WhatsApp via Z-API only (not the official WhatsApp Cloud API).
-- Two-way sync only with iCloud (yours, or users connected with `pnpm connect-icloud`). Invite-code guests see their agenda read-only in their calendar app (changes go through WhatsApp); no Google Calendar write access.
+- Two-way sync only with iCloud (yours, or users connected with `pnpm connect-icloud`). Other users see their agenda read-only in their calendar app (changes go through WhatsApp); no Google Calendar write access.
 - Tasks live in the bot, not in Apple's Reminders app: since the iOS 13 Reminders upgrade, iCloud no longer exposes reminders over CalDAV, and there's no public API for them.
 - Guests all share the bot's WhatsApp number and your DeepSeek/Z-API quota.
 
