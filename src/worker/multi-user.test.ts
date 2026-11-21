@@ -9,26 +9,18 @@ import type { Action } from "./llm/extract";
 import type { State } from "./llm/state";
 import { memoryDb } from "./testing/sqlite";
 import { localDateTime, localToUtc } from "./time";
-import { addUser, findUser, findUserByToken, hasInvite, listUsers, loadProfile, removeUser, setupGuest, userSettings } from "./users";
+import { addUser, findUser, findUserByToken, listUsers, loadProfile, removeUser, setupGuest, userSettings } from "./users";
 import { canonPhone } from "./zapi";
 
 const TZ = "America/Araguaina";
 
-describe("phones and invite code", () => {
+describe("phones", () => {
   it("canonPhone: one key per BR mobile, with or without the 9th digit", () => {
     expect(canonPhone("+55 63 99104-7668")).toBe("556391047668");
     expect(canonPhone("556391047668")).toBe("556391047668");
     expect(canonPhone("+1 415 555 0100")).toBe("14155550100");
   });
 
-  it("hasInvite: the code as a word, case/accents ignored; no code → nobody joins", () => {
-    expect(hasInvite("agendaX7K2", "agendax7k2")).toBe(true);
-    expect(hasInvite("oi! meu código é AgendaX7K2 :)", "agendax7k2")).toBe(true);
-    expect(hasInvite("agendax7k2z", "agendax7k2")).toBe(false);
-    expect(hasInvite("oi", "agendax7k2")).toBe(false);
-    expect(hasInvite("abc", "abc")).toBe(false);
-    expect(hasInvite("anything", undefined)).toBe(false);
-  });
 });
 
 describe("registry", () => {
