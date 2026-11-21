@@ -92,8 +92,7 @@ const SETTINGS: [key: keyof typeof DEFAULTS, help: string][] = [
   ["TASK_NAG_MINUTES", "Re-send pending tasks every N minutes on their due day (0 = off)"],
   ["TASK_NAG_UNTIL", "No task nags after this time (HH:mm)"],
 ];
-// INVITE_CODE is optional (unset = only the owner); JSON.stringify drops it then.
-const SECRET_KEYS = [...REQUIRED.map(([k]) => k), "ZAPI_WEBHOOK_TOKEN", "DEBUG_TOKEN", "CREDENTIALS_KEY", "INVITE_CODE", "BOT_PHONE", ...SETTINGS.map(([k]) => k)];
+const SECRET_KEYS = [...REQUIRED.map(([k]) => k), "ZAPI_WEBHOOK_TOKEN", "DEBUG_TOKEN", "CREDENTIALS_KEY", ...SETTINGS.map(([k]) => k)];
 
 /* ------------------------------ validation ------------------------------ */
 
