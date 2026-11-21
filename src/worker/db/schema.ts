@@ -282,26 +282,3 @@ export const users = sqliteTable("users", {
 });
 
 export type User = typeof users.$inferSelect;
-
-/**
- * Registry only: logins started on the signup page (GET /). The page shows a
- * short code; the person sends it to the bot on WhatsApp (so the bot only
- * ever replies, never starts a chat) and the page, polling with the secret
- * id, gets a session for the number that sent it.
- */
-export const loginRequests = sqliteTable(
-  "login_requests",
-  {
-    /** Secret handle only the page knows (polling). */
-    id: text("id").primaryKey(),
-    /** What the person sends on WhatsApp ("entrar K7M2QX"). */
-    code: text("code").notNull().unique(),
-    /** Digits as WhatsApp reported the sender; null until claimed. */
-    phone: text("phone"),
-    expiresAt: ts("expires_at").notNull(),
-    /** Set when the page picked up the session (single use). */
-    consumed: integer("consumed", { mode: "boolean" }).notNull().default(false),
-    createdAt: ts("created_at").notNull().$defaultFn(now),
-  },
-  (t) => [index("login_requests_created_idx").on(t.createdAt)],
-);

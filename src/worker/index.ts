@@ -1,11 +1,8 @@
 import { Hono, type Context } from "hono";
 
 import type { CategoryConfig, ExportData } from "./debug";
-import { portal } from "./portal";
 import { registry, scheduler, type Inbound } from "./scheduler";
-import { hasInvite, welcome } from "./users";
-import { loginCodeIn } from "./signup";
-import { canonPhone, samePhone, sendText, type ZapiReceived } from "./zapi";
+import { canonPhone, samePhone, type ZapiReceived } from "./zapi";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -39,30 +36,10 @@ app.post("/webhooks/zapi", async (c) => {
   // on messageId) before we ack, then processes it with retries. If that
   // fails we return 500 so Z-API redelivers.
   try {
-    // Signup page login ("Entrar na agenda: K7M2QX"): bind this number to the
-    // page that showed the code. Answered here, never seen by the model.
-    const login = samePhone(body.phone, env.OWNER_PHONE) ? null : loginCodeIn(msg.text);
-    if (login && (await registry(env).loginClaim(login, body.phone))) {
-      await sendText(env, body.phone, "✅ Pronto! Volta pra página pra continuar.\n\nSe não foi você que abriu a página, ignora esta mensagem.").catch((err) =>
-        console.error("[webhook] login reply failed", err),
-      );
-      console.log("[webhook] login claimed", canonPhone(body.phone));
-      return c.json({ ok: true, login: true });
-    }
-    if (!samePhone(body.phone, env.OWNER_PHONE)) {
-      // Everyone else: registered users, or someone sending the invite code.
-      // Anyone else is ignored without touching their object.
-      const reg = registry(env);
-      const known = await reg.registryFind(body.phone);
-      if (!known) {
-        if (!hasInvite(msg.text, env.INVITE_CODE)) return c.json({ ok: true, ignored: "sender" });
-        const name = body.senderName?.trim() || null;
-        const user = await reg.registryAdd(body.phone, name);
-        const feedUrl = `webcal://${new URL(c.req.url).host}/cal/${user.icsToken}.ics`;
-        await scheduler(env, body.phone).join({ messageId: msg.messageId, phone: body.phone, name, feedUrl, welcome: welcome(env, name, feedUrl) });
-        console.log("[webhook] new user", canonPhone(body.phone));
-        return c.json({ ok: true, joined: true });
-      }
+    // Only the owner and registered users (added by the owner, POST
+    // /debug/users). Anyone else is ignored without touching their object.
+    if (!samePhone(body.phone, env.OWNER_PHONE) && !(await registry(env).registryFind(body.phone))) {
+      return c.json({ ok: true, ignored: "sender" });
     }
     await scheduler(env, body.phone).enqueue(msg);
   } catch (err) {
@@ -108,6 +85,24 @@ app.use("/debug/*", async (c, next) => {
 const fail = (c: Context, err: unknown) => c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
 
 app.get("/debug/users", async (c) => c.json(await registry(c.env).registryList()));
+
+/**
+ * Give someone access (there is no public signup): their own agenda in the
+ * bot. Silent: the bot never writes first, so tell them to message it
+ * ("link da agenda" sends their calendar link).
+ */
+app.post("/debug/users", async (c) => {
+  const body = await c.req.json<{ phone?: string; name?: string }>().catch(() => ({}) as { phone?: string; name?: string });
+  const phone = body.phone;
+  if (!phone || canonPhone(phone).length < 10) return c.json({ error: "{ phone, name? } required" }, 400);
+  if (samePhone(phone, c.env.OWNER_PHONE)) return c.json({ error: "that's the owner" }, 400);
+  const name = body.name?.trim() || null;
+  const user = await registry(c.env).registryAdd(phone, name);
+  const feedUrl = `webcal://${new URL(c.req.url).host}/cal/${user.icsToken}.ics`;
+  await scheduler(c.env, phone).join({ phone, name, feedUrl });
+  console.log("[debug] user added", canonPhone(phone));
+  return c.json(user);
+});
 
 /** Connect a user's own iCloud (pnpm connect-icloud). Registers them if needed. */
 app.put("/debug/icloud", async (c) => {
@@ -163,11 +158,6 @@ app.post("/debug/restore", async (c) => {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
-
-/* ------------------------------- Signup -------------------------------- */
-// Open signup page at "/" (see portal.ts).
-
-app.route("/", portal);
 
 app.all("*", (c) => c.text("not found", 404));
 

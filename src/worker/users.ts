@@ -1,6 +1,5 @@
 import { asc, eq } from "drizzle-orm";
 
-import { normText } from "./calendar/store";
 import { GUEST_CATEGORIES } from "./calendar/sqlite-store";
 import { settings, type Settings } from "./config";
 import type { Db } from "./db/client";
@@ -9,10 +8,10 @@ import { canonPhone, digits } from "./zapi";
 
 /*
  * Multi-user: every person has their own Durable Object (own SQLite, alarm,
- * inbox, state). The owner keeps "main" with events in iCloud; everyone else
- * joins with the invite code and gets events in their object's SQLite, shown
- * on their phone through a read-only ICS feed. The "registry" object only
- * keeps the users table (who may talk to the bot, and feed tokens).
+ * inbox, state). The owner keeps "main" with events in iCloud; everyone the
+ * owner adds (pnpm db add-user; no public signup) gets events in their
+ * object's SQLite, shown on their phone through a read-only ICS feed. The
+ * "registry" object only keeps the users table (who may talk to the bot, and feed tokens).
  */
 
 /* ------------------------------- registry ------------------------------- */
@@ -43,13 +42,6 @@ export async function addUser(db: Db, phone: string, name: string | null): Promi
 export async function removeUser(db: Db, phone: string): Promise<boolean> {
   const res = await db.delete(users).where(eq(users.phone, canonPhone(phone))).returning({ phone: users.phone });
   return res.length > 0;
-}
-
-/** The message carries the invite code (as a word, case/accents ignored). */
-export function hasInvite(text: string, code: string | undefined): boolean {
-  const c = normText(code ?? "");
-  if (c.length < 4) return false; // no code configured (or too weak) → nobody joins
-  return ` ${normText(text).replace(/[^\p{L}\p{N}]+/gu, " ")} `.includes(` ${c} `);
 }
 
 /* -------------------------------- profile ------------------------------- */
@@ -94,21 +86,3 @@ export function userSettings(env: Parameters<typeof settings>[0], p: Profile | n
 }
 
 export const isGuest = (p: Profile | null) => p?.storage === "local";
-
-/** First WhatsApp message a new user gets (invite code or signup page). */
-export function welcome(env: Parameters<typeof settings>[0], name: string | null, feedUrl: string): string {
-  const { morningAt, defaultReminder } = settings(env);
-  const hi = name ? `👋 Oi, ${name.split(" ")[0]}! Você entrou.` : "👋 Oi! Você entrou.";
-  return `${hi} Sou sua agenda no WhatsApp: escreve do jeito que você fala.
-
-• _dentista sexta 15h_
-• _aula de inglês toda terça 19h_
-• _o que tenho amanhã?_
-• _me lembra de pagar o boleto dia 10_
-• _compra leite e ovos_ · _lista_
-
-Te mando um resumo do dia às ${morningAt} e lembro dos compromissos ${defaultReminder} min antes. Pra mudar: _resumo às 8h_, _lembrete 1h antes_.
-
-📅 *Pra ver a agenda no calendário do celular*, toca no link (iPhone: "Assinar"; Google Agenda: Configurações → Adicionar agenda → Por URL, trocando webcal:// por https://):
-${feedUrl}`;
-}

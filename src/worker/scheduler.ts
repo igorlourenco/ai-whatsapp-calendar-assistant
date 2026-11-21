@@ -19,7 +19,6 @@ import { nextWakeUp, runDue, type CronConfig } from "./notifications";
 import { addUser, findUser, findUserByToken, listUsers, loadProfile, removeUser, setupGuest, userSettings } from "./users";
 import { calendarHome } from "./icloud/caldav";
 import { seal } from "./secrets";
-import { claimLogin, pollLogin, startLogin } from "./signup";
 import { localDate, localDateTime } from "./time";
 import { canonPhone, digits, samePhone, sendText } from "./zapi";
 
@@ -168,37 +167,10 @@ export class Scheduler extends DurableObject<Env> {
 
   /* ------------------------------- guests -------------------------------- */
 
-  /**
-   * A new user's object: profile + starter categories, and the welcome
-   * message queued in the inbox (sent with the usual retries). Idempotent:
-   * sending the code again just re-sends the welcome.
-   */
-  async join(m: { messageId: string; phone: string; name: string | null; feedUrl: string; welcome: string; tz?: string | null }): Promise<void> {
+  /** A new user's object: profile + starter categories. Idempotent. */
+  async join(m: { phone: string; name: string | null; feedUrl: string; tz?: string | null }): Promise<void> {
     await setupGuest(this.sqlDb, m.phone, m.name, m.feedUrl, m.tz);
-    await this.db
-      .insert(inboundMessages)
-      .values({ messageId: m.messageId, phone: m.phone, text: "", status: "answered", reply: m.welcome })
-      .onConflictDoNothing();
-    this.kicked = true;
-    await this.ctx.storage.setAlarm(Date.now());
-  }
-
-  /** Has this object been set up (and how)? For the signup page. */
-  async accountSummary(): Promise<{ storage: "icloud" | "local"; name: string | null } | null> {
-    const p = await this.profile();
-    return p ? { storage: p.storage, name: p.name } : null;
-  }
-
-  /**
-   * Delete everything this user has in the bot (signup page, "excluir conta"):
-   * tasks, events, settings, inbox, stored iCloud login. The object restarts
-   * empty. Events in the user's own iCloud are not touched.
-   */
-  async wipe(): Promise<void> {
-    await this.ctx.storage.deleteAlarm();
-    await this.ctx.storage.deleteAll();
-    // Restart so the next request re-runs the migrations on an empty database.
-    setTimeout(() => this.ctx.abort("account deleted"), 50);
+    await this.reschedule();
   }
 
   /** This user's events as an ICS feed (guests only; null for the owner). */
@@ -320,15 +292,6 @@ Tenta: _dentista sexta 15h_ · _o que tenho amanhã?_`,
   }
   registryRemove(phone: string) {
     return removeUser(this.sqlDb, phone);
-  }
-  loginStart() {
-    return startLogin(this.sqlDb);
-  }
-  loginClaim(code: string, phone: string) {
-    return claimLogin(this.sqlDb, code, phone);
-  }
-  loginPoll(id: string) {
-    return pollLogin(this.sqlDb, id);
   }
 
   /* ----------------------- debug / ops (token-guarded) ---------------------- */

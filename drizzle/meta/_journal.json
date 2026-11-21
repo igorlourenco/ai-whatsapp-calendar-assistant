@@ -85,6 +85,13 @@
       "when": 1795104409669,
       "tag": "0011_login_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795269025363,
+      "tag": "0012_drop_login_requests",
+      "breakpoints": true
     }
   ]
 }
