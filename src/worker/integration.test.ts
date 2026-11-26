@@ -302,7 +302,8 @@ describe("notifications", () => {
     expect(await wake("2026-11-23T10:00")).toBe("2026-11-23T18:30");
     expect(await wake("2026-11-23T18:40")).toBe("2026-11-23T18:40");
     expect(await wake("2026-11-20T16:10")).toBe("2026-11-20T21:00");
-    expect(await wake("2026-11-21T22:00")).toBe("2026-11-22T07:00");
+    expect(await wake("2026-11-21T22:00")).toBe("2026-11-21T22:30"); // spending summary
+    expect(await wake("2026-11-21T22:31")).toBe("2026-11-22T07:00");
   });
 
   it("failed send releases the claim so a retry resends", async () => {

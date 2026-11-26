@@ -120,7 +120,7 @@ describe("guest flows on the SQLite store", () => {
 
   it("settings: change, then show", async () => {
     expect(await step([{ type: "settings", morning_at: "08:00", reminder_minutes: 15 }])).toBe(
-      "⚙️ *Configuração salva*\n☀️ resumo do dia: 08:00\n🌙 prévia de amanhã: 21:00\n⏰ lembrete padrão: 15 min antes\n🔔 cobrança de tarefas: desligada (_me cobra a cada 30 min_ liga)\n🌎 fuso: America/Araguaina",
+      "⚙️ *Configuração salva*\n☀️ resumo do dia: 08:00\n🌙 prévia de amanhã: 21:00\n⏰ lembrete padrão: 15 min antes\n🔔 cobrança de tarefas: desligada (_me cobra a cada 30 min_ liga)\n💸 gastos do dia: 22:30 · semana (dom) e mês (último dia) às 22:30\n🌎 fuso: America/Araguaina",
     );
     expect(await loadProfile(ctx.db)).toMatchObject({ morningAt: "08:00", defaultReminder: 15, storage: "local" });
     expect(await step([{ type: "settings", timezone: "Marte/Olympus" }])).toContain("Não reconheci o fuso");
