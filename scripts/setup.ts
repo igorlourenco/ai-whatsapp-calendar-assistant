@@ -91,6 +91,7 @@ const SETTINGS: [key: keyof typeof DEFAULTS, help: string][] = [
   ["TRANSCRIBE_MODEL", "Workers AI model that transcribes voice notes"],
   ["TASK_NAG_MINUTES", "Re-send pending tasks every N minutes on their due day (0 = off)"],
   ["TASK_NAG_UNTIL", "No task nags after this time (HH:mm)"],
+  ["EXPENSE_SUMMARY_TIME", "Spending summary time (HH:mm; Sundays add the week, the last day the month)"],
 ];
 const SECRET_KEYS = [...REQUIRED.map(([k]) => k), "ZAPI_WEBHOOK_TOKEN", "DEBUG_TOKEN", "CREDENTIALS_KEY", ...SETTINGS.map(([k]) => k)];
 

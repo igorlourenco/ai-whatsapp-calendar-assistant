@@ -74,8 +74,8 @@ export class Scheduler extends DurableObject<Env> {
   }
 
   private cfg(p: Profile | null): CronConfig {
-    const { morningAt, eveningAt, taskNagMinutes, taskNagUntil } = userSettings(this.env, p);
-    return { morningAt, eveningAt, taskNagMinutes, taskNagUntil };
+    const { morningAt, eveningAt, taskNagMinutes, taskNagUntil, expenseAt, expenseDaily } = userSettings(this.env, p);
+    return { morningAt, eveningAt, taskNagMinutes, taskNagUntil, expenseAt, expenseDaily, expenseBudget: p?.expenseBudget ?? null };
   }
 
   /** Who gets reminders/digests: the user's own phone (only the owner's object has none). */

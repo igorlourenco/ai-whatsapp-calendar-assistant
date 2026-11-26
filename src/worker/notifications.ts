@@ -4,7 +4,8 @@ import { and, eq, gte } from "drizzle-orm";
 
 import type { Db } from "./db/client";
 
-import { digestLog, reminderLog } from "./db/schema";
+import { digestLog, reminderLog, type DigestKind } from "./db/schema";
+import { daySummary, monthRange, monthSummary, toExpenseRef, weekSummary } from "./expenses";
 import { loadState, saveState } from "./llm/state";
 import { inNagPhase, markNagged, nextNagAt, openTasks, taskLine, taskSection, tasksDue, toTaskRef, type NagCfg } from "./tasks";
 import { addDays, hhmmToMinutes, humanDatePt, localDate, localToUtc, toLocalParts } from "./time";
@@ -14,7 +15,19 @@ type Send = (message: string) => Promise<void>;
 /** What notifications need: the event store + Neon (for send claims). */
 export type Ctx = { store: CalendarStore; db: Db; tz: string };
 
-export type CronConfig = { morningAt: string; eveningAt: string; taskNagMinutes?: number; taskNagUntil?: string };
+export type CronConfig = {
+  morningAt: string;
+  eveningAt: string;
+  taskNagMinutes?: number;
+  taskNagUntil?: string;
+  /** Spending summaries time (default 22:30); daily one can be off, week/month always go out. */
+  expenseAt?: string;
+  expenseDaily?: boolean;
+  /** Overall monthly limit (cents), for the warnings in the summaries. */
+  expenseBudget?: number | null;
+};
+
+const EXPENSE_AT = "22:30";
 
 const nagCfg = (cfg: CronConfig): NagCfg => ({
   morningAt: cfg.morningAt,
@@ -80,7 +93,7 @@ async function sendTaskNags(ctx: Ctx, cfg: NagCfg, send: Send, now: Date) {
 export async function nextWakeUp(ctx: Ctx, cfg: CronConfig, now = new Date()): Promise<Date> {
   const today = localDate(now, ctx.tz);
   let next = [today, addDays(today, 1)]
-    .flatMap((d) => [cfg.morningAt, cfg.eveningAt].map((t) => localToUtc(`${d}T${t}`, ctx.tz)))
+    .flatMap((d) => [cfg.morningAt, cfg.eveningAt, cfg.expenseAt ?? EXPENSE_AT].map((t) => localToUtc(`${d}T${t}`, ctx.tz)))
     .filter((d) => d > now)
     .reduce((a, b) => (a < b ? a : b));
 
@@ -155,7 +168,7 @@ async function sendDigests(ctx: Ctx, cfg: CronConfig, send: Send, now: Date) {
     const t = hhmmToMinutes(at);
     return nowMin >= t && nowMin < t + DIGEST_GRACE_MIN;
   };
-  const claim = async (kind: "morning" | "evening") =>
+  const claim = async (kind: DigestKind) =>
     (
       await ctx.db
         .insert(digestLog)
@@ -164,12 +177,14 @@ async function sendDigests(ctx: Ctx, cfg: CronConfig, send: Send, now: Date) {
         .returning()
     ).length > 0;
 
-  const release = (kind: "morning" | "evening") =>
+  const release = (kind: DigestKind) =>
     ctx.db.delete(digestLog).where(and(eq(digestLog.kind, kind), eq(digestLog.localDate, today)));
-  const deliver = async (kind: "morning" | "evening", build: () => Promise<string>) => {
+  /** build() returning null = nothing to say (claimed anyway: no re-check every alarm). */
+  const deliver = async (kind: DigestKind, build: () => Promise<string | null>) => {
     if (!(await claim(kind))) return;
     try {
-      await send(await build());
+      const msg = await build();
+      if (msg) await send(msg);
     } catch (err) {
       await release(kind);
       throw err;
@@ -178,6 +193,25 @@ async function sendDigests(ctx: Ctx, cfg: CronConfig, send: Send, now: Date) {
 
   if (due(cfg.morningAt)) await deliver("morning", () => morningDigest(ctx, today));
   if (due(cfg.eveningAt)) await deliver("evening", () => eveningDigest(ctx, addDays(today, 1)));
+
+  // Spending: the day (unless turned off), Sunday the week, the last day the month.
+  if (due(cfg.expenseAt ?? EXPENSE_AT)) {
+    const budget = cfg.expenseBudget ?? null;
+    if (cfg.expenseDaily !== false) {
+      await deliver("expense_day", async () => {
+        const r = await daySummary(ctx.db, today, budget);
+        if (!r) return null;
+        // Numbered = G1…, so "muda o 2 pra 30" right after resolves.
+        const state = await loadState(ctx.db, now);
+        state.expenses = r.listed.slice(0, 10).map((e) => toExpenseRef(e, today));
+        state.lastList = "expenses";
+        await saveState(ctx.db, state, now);
+        return r.text;
+      });
+    }
+    if (p.weekday === 0) await deliver("expense_week", () => weekSummary(ctx.db, today));
+    if (monthRange(today)[1] === today) await deliver("expense_month", () => monthSummary(ctx.db, today, budget));
+  }
 }
 
 export async function morningDigest(ctx: Ctx, today: string): Promise<string> {
