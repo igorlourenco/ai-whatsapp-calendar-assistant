@@ -51,7 +51,7 @@ export async function loadProfile(db: Db): Promise<Profile | null> {
   return row ?? null;
 }
 
-export type ProfilePatch = Partial<Pick<Profile, "tz" | "morningAt" | "eveningAt" | "defaultReminder" | "taskNagMinutes" | "name">>;
+export type ProfilePatch = Partial<Pick<Profile, "tz" | "morningAt" | "eveningAt" | "defaultReminder" | "taskNagMinutes" | "name" | "expenseDaily" | "expenseAt" | "expenseBudget">>;
 
 /** Change settings. The owner's object gets a row on its first change. */
 export async function updateProfile(db: Db, patch: ProfilePatch): Promise<Profile> {
@@ -82,6 +82,8 @@ export function userSettings(env: Parameters<typeof settings>[0], p: Profile | n
     eveningAt: p.eveningAt ?? base.eveningAt,
     defaultReminder: p.defaultReminder ?? base.defaultReminder,
     taskNagMinutes: p.taskNagMinutes ?? base.taskNagMinutes,
+    expenseAt: p.expenseAt ?? base.expenseAt,
+    expenseDaily: p.expenseDaily ?? base.expenseDaily,
   };
 }
 

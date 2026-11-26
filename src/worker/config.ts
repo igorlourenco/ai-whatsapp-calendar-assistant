@@ -15,6 +15,10 @@ export type Settings = {
   taskNagMinutes: number;
   /** No task nags after this local time (they resume at the morning digest). */
   taskNagUntil: string;
+  /** When the spending summaries go out (day; Sunday adds the week, last day the month). */
+  expenseAt: string;
+  /** Daily spending summary on/off (week/month always go out). */
+  expenseDaily: boolean;
 };
 
 export const DEFAULTS = {
@@ -30,6 +34,7 @@ export const DEFAULTS = {
   /** Off by default; each user turns it on by message ("me cobra a cada 30 min"). */
   TASK_NAG_MINUTES: "0",
   TASK_NAG_UNTIL: "22:00",
+  EXPENSE_SUMMARY_TIME: "22:30",
 } as const;
 
 type SettingsEnv = Partial<Record<keyof typeof DEFAULTS, string>>;
@@ -77,5 +82,7 @@ export function settings(env: SettingsEnv): Settings {
     transcribeModel: env.TRANSCRIBE_MODEL || DEFAULTS.TRANSCRIBE_MODEL,
     taskNagMinutes: nagMinutes(env.TASK_NAG_MINUTES),
     taskNagUntil: hhmm(env.TASK_NAG_UNTIL, DEFAULTS.TASK_NAG_UNTIL),
+    expenseAt: hhmm(env.EXPENSE_SUMMARY_TIME, DEFAULTS.EXPENSE_SUMMARY_TIME),
+    expenseDaily: true,
   };
 }

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 
 import type { OccurrenceView } from "../calendar/store";
 import type { Db } from "../db/client";
-import { assistantState, type DraftCreate, type FocusItem, type PendingBatch, type PendingPick, type TaskRef } from "../db/schema";
+import { assistantState, type DraftCreate, type ExpenseRef, type FocusItem, type PendingBatch, type PendingPick, type TaskRef } from "../db/schema";
 import { localDate, localTime, shortDatePt, weekdayNamePt } from "../time";
 
 const DRAFT_TTL_MS = 15 * 60_000;
@@ -23,13 +23,15 @@ export type State = {
   batch?: PendingBatch | null;
   /** Tasks recently created/changed/listed (T1…). */
   tasks?: TaskRef[];
-  /** Which numbered list was shown last ("o 2" → E2 or T2). */
-  lastList?: "events" | "tasks" | null;
+  /** Expenses recently logged/changed/listed (G1…). */
+  expenses?: ExpenseRef[];
+  /** Which numbered list was shown last ("o 2" → E2, T2 or G2). */
+  lastList?: "events" | "tasks" | "expenses" | null;
 };
 
 export async function loadState(db: Db, now = new Date()): Promise<State> {
   const [row] = await db.select().from(assistantState).where(eq(assistantState.id, 1)).limit(1);
-  if (!row) return { draft: null, focus: [], pick: null, batch: null, tasks: [], lastList: null };
+  if (!row) return { draft: null, focus: [], pick: null, batch: null, tasks: [], expenses: [], lastList: null };
   const fresh = (at: Date | null, ttl: number) => !!at && now.getTime() - at.getTime() < ttl;
   return {
     draft: fresh(row.draftAt, DRAFT_TTL_MS) ? row.draft : null,
@@ -37,7 +39,9 @@ export async function loadState(db: Db, now = new Date()): Promise<State> {
     focus: fresh(row.focusAt, FOCUS_TTL_MS) ? row.focus : [],
     batch: fresh(row.batchAt, BATCH_TTL_MS) ? row.batch : null,
     tasks: fresh(row.taskFocusAt, FOCUS_TTL_MS) ? row.taskFocus : [],
-    lastList: fresh(row.focusAt, FOCUS_TTL_MS) || fresh(row.taskFocusAt, FOCUS_TTL_MS) ? row.lastList : null,
+    expenses: fresh(row.expenseFocusAt, FOCUS_TTL_MS) ? row.expenseFocus : [],
+    lastList:
+      fresh(row.focusAt, FOCUS_TTL_MS) || fresh(row.taskFocusAt, FOCUS_TTL_MS) || fresh(row.expenseFocusAt, FOCUS_TTL_MS) ? row.lastList : null,
   };
 }
 
@@ -54,6 +58,8 @@ export async function saveState(db: Db, s: State, now = new Date()): Promise<voi
     focusAt: s.focus.length ? now : null,
     taskFocus: (s.tasks ?? []).slice(0, FOCUS_MAX),
     taskFocusAt: s.tasks?.length ? now : null,
+    expenseFocus: (s.expenses ?? []).slice(0, FOCUS_MAX),
+    expenseFocusAt: s.expenses?.length ? now : null,
     lastList: s.lastList ?? null,
   };
   await db.insert(assistantState).values(values).onConflictDoUpdate({ target: assistantState.id, set: values });
@@ -74,6 +80,12 @@ export function toFocus(o: OccurrenceView, tz: string): FocusItem {
 export function pushTasks(list: TaskRef[], items: TaskRef[]): TaskRef[] {
   const ids = new Set(items.map((i) => i.taskId));
   return [...items, ...list.filter((t) => !ids.has(t.taskId))].slice(0, FOCUS_MAX);
+}
+
+/** Put expenses at the front (most recent = G1), dedupe. */
+export function pushExpenses(list: ExpenseRef[], items: ExpenseRef[]): ExpenseRef[] {
+  const ids = new Set(items.map((i) => i.expenseId));
+  return [...items, ...list.filter((e) => !ids.has(e.expenseId))].slice(0, FOCUS_MAX);
 }
 
 /** Put items at the front (most recent = E1), dedupe by event. */

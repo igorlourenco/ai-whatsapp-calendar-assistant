@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { monthRange, weekRange } from "../expenses";
 import { addDays, humanDatePt, localDate, localTime } from "../time";
 import { completeJson, type DeepSeekEnv } from "./deepseek";
 import type { State } from "./state";
@@ -111,12 +112,56 @@ export const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("remove_shopping"), items: z.array(z.string().min(1)).min(1) }),
   z.object({ type: z.literal("list_shopping") }),
   z.object({
+    type: z.literal("add_expense"),
+    /** In reais (45.5 = R$ 45,50). */
+    amount: z.number().positive(),
+    description: z.string().min(1),
+    category: opt(z.string()),
+    /** Day it was spent; null = today. */
+    date: opt(ymd),
+    /** Shopping-list items this purchase covers ("comprei leite e pão 15 reais"). */
+    shopping_items: opt(z.array(z.string().min(1))),
+  }),
+  z.object({
+    type: z.literal("update_expense"),
+    ref: opt(z.string()),
+    search: opt(z.string()),
+    on_date: opt(ymd),
+    changes: z.object({
+      amount: opt(z.number().positive()),
+      description: opt(z.string().min(1)),
+      category: opt(z.string()),
+      date: opt(ymd),
+    }),
+  }),
+  z.object({ type: z.literal("delete_expense"), ref: opt(z.string()), search: opt(z.string()), on_date: opt(ymd) }),
+  z.object({
+    type: z.literal("query_expenses"),
+    from: ymd,
+    to: ymd,
+    category: opt(z.string()),
+    search: opt(z.string()),
+  }),
+  z.object({ type: z.literal("create_expense_category"), name: z.string().min(1), emoji: z.string().min(1) }),
+  z.object({
+    type: z.literal("set_budget"),
+    /** Expense category slug; null = overall monthly limit. */
+    category: opt(z.string()),
+    /** Reais per month; 0 = remove the limit. */
+    amount: z.number().min(0),
+  }),
+  z.object({ type: z.literal("list_budgets") }),
+  z.object({
     type: z.literal("settings"),
     morning_at: opt(hhmm),
     evening_at: opt(hhmm),
     reminder_minutes: z.number().int().min(0).max(1440).nullish(),
     task_nag_minutes: z.number().int().min(0).max(1440).nullish(),
     timezone: opt(z.string()),
+    /** Daily spending summary on/off. */
+    expense_daily: opt(z.boolean()),
+    /** Time of the spending summaries. */
+    expense_at: opt(hhmm),
   }),
   z.object({ type: z.literal("calendar_link") }),
   z.object({ type: z.literal("unknown") }),
@@ -140,7 +185,13 @@ ${JSON.stringify(state.draft)}
 → Se a mensagem atual traz o que falta (ex: "sexta 15h", "dia 20"), gere UM "create" com os campos acima + os novos.
 → Se a mensagem atual é outro pedido, ignore o rascunho.`);
   }
-  if (state.pick && state.pick.action.endsWith("_task")) {
+  if (state.pick && state.pick.action.endsWith("_expense")) {
+    const kind = state.pick.action as "delete_expense" | "update_expense";
+    const what = kind === "delete_expense" ? "APAGAR" : `ALTERAR (mudanças: ${JSON.stringify("changes" in state.pick ? state.pick.changes : {})})`;
+    parts.push(`Pergunta pendente: o usuário precisa escolher QUAL gasto da lista G abaixo ${what}.
+→ Se a mensagem escolhe um (número "2", "o segundo", descrição), gere {"type":"${kind}","ref":"G<n>"${kind === "update_expense" ? ',"changes":{}' : ""}} para o escolhido (pode ser mais de um).
+→ Se a mensagem é outro pedido, ignore a pergunta.`);
+  } else if (state.pick && state.pick.action.endsWith("_task")) {
     const kind = state.pick.action as "complete_task" | "delete_task" | "update_task";
     const what = { complete_task: "MARCAR COMO FEITA", delete_task: "APAGAR", update_task: `ALTERAR (mudanças: ${JSON.stringify("changes" in state.pick ? state.pick.changes : {})})` }[kind];
     parts.push(`Pergunta pendente: o usuário precisa escolher QUAL tarefa da lista T abaixo ${what}.
@@ -170,7 +221,16 @@ ${state.tasks.map((t, i) => `T${i + 1} = ${t.label}`).join("\n")}
 → Se a mensagem diz o NOME da tarefa, use search e deixe ref null.
 → Uma palavra em comum NÃO faz ser tarefa: se o nome dito não é o de nenhuma T (ex: "doação de sangue" quando T1 = "Organizar doação de suprimentos"), é um EVENTO: use update/delete com search, nunca update_task/ref T.`);
   }
-  if (state.lastList && state.focus.length && state.tasks?.length) {
+  if (state.expenses?.length) {
+    parts.push(`Gastos citados recentemente (já estão anotados; NUNCA anote de novo):
+${state.expenses.map((e, i) => `G${i + 1} = ${e.label}`).join("\n")}
+→ Correção sem nome logo após um gasto ("na verdade foi 50", "era 45", "foi ontem", "muda pra mercado", "isso foi date") = update_expense ref G1. "apaga esse", "apaga o último" = delete_expense ref G1.
+→ Se a mensagem diz o NOME do gasto ("apaga o uber", "o ifood foi 50"), use search e deixe ref null.
+→ Mensagem com valor e o quê ("uber 23", "gastei 45 no ifood") é SEMPRE gasto NOVO (add_expense), mesmo com nome igual a um G.`);
+  }
+  if (state.lastList === "expenses" && state.expenses?.length) {
+    parts.push(`A última coisa mostrada/anotada foi GASTO: número solto ("muda o 2 pra 30", "apaga o 1") e "esse" = G<n>.`);
+  } else if (state.lastList && state.focus.length && state.tasks?.length) {
     parts.push(`A última lista numerada mostrada foi de ${state.lastList === "tasks" ? "TAREFAS: número solto (\"feito o 2\", \"o 3\") = T<n>" : "EVENTOS: número solto (\"o 2\") = E<n>"}.`);
   }
   return parts.length ? `\nContexto atual (estado do sistema, não é conversa):\n${parts.join("\n\n")}\n` : "";
@@ -189,6 +249,7 @@ export function buildPrompt(
   tz: string,
   categories: PromptCategory[],
   state: State = { draft: null, focus: [] },
+  expenseCategories: PromptCategory[] = [],
 ) {
   const today = localDate(now, tz);
   const days = Array.from({ length: 28 }, (_, i) => {
@@ -199,11 +260,21 @@ export function buildPrompt(
     categories
       .map((c) => `- ${c.slug} (${c.emoji} ${c.name})${c.description ? `: ${c.description}` : ""}${c.isDefault ? " [padrão]" : ""}`)
       .join("\n") || "(nenhuma)";
+  const catLine = (c: PromptCategory) => `- ${c.slug} (${c.emoji} ${c.name})${c.description ? `: ${c.description}` : ""}${c.isDefault ? " [padrão]" : ""}`;
+  const expenseCats = expenseCategories.map(catLine).join("\n") || "(nenhuma)";
+  const past = Array.from({ length: 7 }, (_, i) => {
+    const d = addDays(today, -(i + 1));
+    return `${d} = ${humanDatePt(d)}${i === 0 ? " (ontem)" : i === 1 ? " (anteontem)" : ""}`;
+  }).join("\n");
+  const [weekFrom] = weekRange(today);
+  const [monthFrom] = monthRange(today);
+  const lastWeek = weekRange(addDays(weekFrom, -1));
+  const lastMonth = monthRange(addDays(monthFrom, -1));
 
   // Static rules first, everything that changes per call (time, dates,
   // categories, context) last: DeepSeek bills a repeated prompt PREFIX at the
   // cheaper cache-hit rate, so the fixed part must come before the variable one.
-  return `Você converte UMA mensagem de WhatsApp em ações de agenda e tarefas, em JSON. Não converse. Não explique. Responda só o JSON.
+  return `Você converte UMA mensagem de WhatsApp em ações de agenda, tarefas, lista de compras e gastos, em JSON. Não converse. Não explique. Responda só o JSON.
 
 Datas: use SEMPRE a tabela de datas no final para "hoje", "sexta", "sábado que vem", "semana que vem"; nunca calcule dia da semana de cabeça. Datas sem ano: a próxima ocorrência a partir de hoje.
 
@@ -265,8 +336,27 @@ LISTA DE COMPRAS (uma lista só, sem datas):
 15. Tirar sem comprar ("tira o leite da lista", "não precisa mais de ovos") → {"type":"remove_shopping","items":["leite"]}
 16. Ver ("lista", "lista de compras", "o que tenho que comprar?", "o que falta comprar") → {"type":"list_shopping"}. "lista de tarefas" continua list_tasks.
 
+GASTOS (financeiro, valores em reais):
+21. Anotar gasto: qualquer mensagem que diz um VALOR gasto/pago e com o quê ("gastei 45 no ifood", "uber 23,50", "mercado 312", "paguei 120 de luz", "ontem 80 de gasolina", "jantar com a Ana 150", "45 conto no bar") → {"type":"add_expense","amount":45,"description":"iFood","category":"slug","date":"YYYY-MM-DD"|null,"shopping_items":null}
+- amount em reais, número: "23,50" = 23.5; "2 mil" = 2000; "1.200" = 1200; "45 conto"/"45 pila" = 45.
+- description curta, como o usuário disse, primeira letra maiúscula, sem o valor nem "gastei" ("iFood", "Uber", "Gasolina", "Jantar com a Ana").
+- category: o slug da lista "Categorias de gasto" no final que melhor encaixa (use as descrições). Mensagem que fala em date/encontro ("date", "no date", "saí com a fulana", "jantar do date") → SEMPRE "dates", mesmo sendo comida/uber/cinema. Na dúvida, a [padrão].
+- date: só se disser o dia ("ontem", "sábado", "dia 20") usando os "Dias passados"; senão null (= hoje). Nunca data futura.
+- Vários gastos numa mensagem ("uber 20 e almoço 35") → um add_expense para cada.
+- Valor + produtos que podem estar na lista de compras ("comprei leite e pão, 15 reais") → add_expense com shopping_items ["leite","pão"] (o sistema tira da lista); nunca gere "bought" junto.
+- Com valor e verbo no passado é gasto, não compromisso nem tarefa: "jantar com a Ana 150" é gasto; "jantar com a Ana sexta 20h" é compromisso; "pagar luz 120 sexta" (futuro) é tarefa.
+- "paguei o boleto 200" com tarefa citada (T…) do boleto → add_expense E complete_task.
+22. Corrigir gasto: {"type":"update_expense","ref":"G1"|null,"search":"uber"|null,"on_date":"YYYY-MM-DD"|null,"changes":{"amount":null,"description":null,"category":null,"date":null}} só com o que muda.
+23. Apagar gasto ("apaga o gasto do uber", "apaga esse gasto", "esquece o ifood"): {"type":"delete_expense","ref":"G1"|null,"search":"uber"|null,"on_date":null}
+24. Consultar gastos ("quanto gastei hoje?", "gastos da semana", "quanto gastei com mercado esse mês?", "gastos de outubro", "quanto já gastei em date?"): {"type":"query_expenses","from":"YYYY-MM-DD","to":"YYYY-MM-DD","category":"slug"|null,"search":null}
+- Use os períodos de "Dias passados". "essa semana"/"semana" = segunda desta semana até hoje; "esse mês"/"mês" = dia 1 até hoje; "mês passado" e "semana passada" = o período inteiro. search só pra coisa específica ("quanto gastei de uber" → category transporte é melhor; "quanto gastei no ifood" → search "ifood").
+25. Criar categoria de gasto ("cria categoria de gasto pet 🐶", "nova categoria de gastos: academia"): {"type":"create_expense_category","name":"Pet","emoji":"🐶"}. Gasto com categoria citada que não existe ("põe 80 na categoria pet") → create_expense_category antes do add_expense. create_category (sem "gasto") continua sendo da agenda.
+26. Limite mensal ("limite de 800 em alimentação", "orçamento de 300 pra dates", "quero gastar no máximo 5000 por mês") → {"type":"set_budget","category":"slug"|null,"amount":800}. category null = limite total do mês. "tira o limite de lazer" → amount 0.
+27. Ver limites ("meus limites", "como tão os limites?", "orçamento"): {"type":"list_budgets"}
+
 CONFIGURAÇÕES:
-18. Mudar ("resumo às 8h" = morning_at, "prévia da noite às 22h" = evening_at, "lembrete padrão 1h antes" / "me avisa sempre 15 min antes" = reminder_minutes, "moro em Lisboa" / "meu fuso é Manaus" = timezone IANA ex "Europe/Lisbon", "America/Manaus", cobrança de tarefas pendentes = task_nag_minutes): {"type":"settings","morning_at":null,"evening_at":null,"reminder_minutes":null,"task_nag_minutes":null,"timezone":null} com só o que muda.
+18. Mudar ("resumo às 8h" = morning_at, "prévia da noite às 22h" = evening_at, "lembrete padrão 1h antes" / "me avisa sempre 15 min antes" = reminder_minutes, "moro em Lisboa" / "meu fuso é Manaus" = timezone IANA ex "Europe/Lisbon", "America/Manaus", cobrança de tarefas pendentes = task_nag_minutes): {"type":"settings","morning_at":null,"evening_at":null,"reminder_minutes":null,"task_nag_minutes":null,"timezone":null,"expense_daily":null,"expense_at":null} com só o que muda.
+- Resumo de gastos: "desliga o resumo diário de gastos" / "para de mandar os gastos do dia" = expense_daily false; "liga o resumo de gastos" = true; "resumo de gastos às 23h" = expense_at "23:00". Não confunda com morning_at/evening_at (agenda).
 - task_nag_minutes = de quanto em quanto tempo reenviar as tarefas pendentes até "feito": "me cobra das tarefas a cada 20 min" / "lembrete de tarefas a cada 1h" = 20 / 60; "liga a cobrança das tarefas" / "ativa o lembrete automático" sem número = 30; "para de me cobrar" / "desliga a cobrança" / "desativa o lembrete automático" = 0. Não confunda com reminder_minutes (antes de EVENTOS) nem com criar tarefa ("me lembra de pagar o boleto" é create_task).
 - "minhas configurações", "que horas é o resumo?" → settings com tudo null (o sistema mostra as atuais).
 - "me lembra 1h antes" de UM evento citado continua sendo update do evento.
@@ -292,6 +382,14 @@ ${days}
 Categorias:
 ${cats}
 
+Dias passados (para gastos):
+${past}
+Esta semana: ${weekFrom} a ${today} · semana passada: ${lastWeek[0]} a ${lastWeek[1]}
+Este mês: ${monthFrom} a ${today} · mês passado: ${lastMonth[0]} a ${lastMonth[1]}
+
+Categorias de gasto:
+${expenseCats}
+
 Agora: ${today} ${localTime(now, tz)} (${tz}).
 ${contextBlock(state)}`;
 }
@@ -300,9 +398,9 @@ ${contextBlock(state)}`;
 export async function extractActions(
   env: DeepSeekEnv,
   text: string,
-  ctx: { now: Date; tz: string; categories: PromptCategory[]; state?: State },
+  ctx: { now: Date; tz: string; categories: PromptCategory[]; state?: State; expenseCategories?: PromptCategory[] },
 ): Promise<Action[]> {
-  const prompt = buildPrompt(ctx.now, ctx.tz, ctx.categories, ctx.state);
+  const prompt = buildPrompt(ctx.now, ctx.tz, ctx.categories, ctx.state, ctx.expenseCategories);
   let lastError = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     let raw = await completeJson(env, prompt, text);

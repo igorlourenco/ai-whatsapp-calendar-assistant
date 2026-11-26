@@ -34,6 +34,33 @@ import {
 } from "../tasks";
 import type { Task, TaskRef } from "../db/schema";
 import { addItems, findItem, formatShoppingList, joinNames, markBought, openItems, removeItems } from "../shopping";
+import {
+  addExpense,
+  brl,
+  budgetStatus,
+  categoryOf,
+  cleanDescription,
+  createExpenseCategory,
+  dayLabel,
+  defaultExpenseCategory,
+  deleteExpense,
+  expenseId,
+  expenseLine,
+  expensesBetween,
+  findExpenseCategory,
+  formatBudgets,
+  formatQuery,
+  getExpense,
+  listExpenseCategories,
+  monthName,
+  searchExpenses,
+  setCategoryBudget,
+  toCents,
+  toExpenseRef,
+  updateExpense,
+  type ExpenseInput,
+} from "../expenses";
+import type { Expense, ExpenseRef } from "../db/schema";
 import { nagMinutes, validTimezone } from "../config";
 import { loadProfile, updateProfile, type ProfilePatch } from "../users";
 import { addDays, diffDays, localDate, localDateTime, localTime, localToUtc, shortDatePt } from "../time";
@@ -43,7 +70,7 @@ import { batchItems, parseBatchReply, previewMessage, type BatchAnswer, type Cre
 import { extractActions, type Action } from "./extract";
 import type { Transcribe } from "./transcribe";
 import { MediaTooLarge, type Vision } from "./vision";
-import { loadState, pushFocus, pushTasks, saveState, toFocus, type State } from "./state";
+import { loadState, pushExpenses, pushFocus, pushTasks, saveState, toFocus, type State } from "./state";
 
 export type AppCtx = {
   store: CalendarStore;
@@ -56,7 +83,7 @@ export type AppCtx = {
   /** WhatsApp message being handled; makes creates idempotent on retry. */
   sourceMessageId?: string | null;
   /** Guests keep events in the bot (ICS feed); the owner uses iCloud. */
-  user?: { guest: boolean; feedUrl: string | null; morningAt: string; eveningAt: string };
+  user?: { guest: boolean; feedUrl: string | null; morningAt: string; eveningAt: string; expenseAt?: string; expenseDaily?: boolean };
 };
 
 export type WriteRecord =
@@ -76,6 +103,7 @@ export const HELP_TEXT = `🤔 Não entendi. Exemplos:
 • _me lembra de pagar o boleto sexta_
 • _tarefas_ · _feito o 2_
 • _compra leite e ovos_ · _lista_ · _comprei o leite_
+• _gastei 45 no ifood_ · _quanto gastei esse mês?_ · _limite de 800 em alimentação_
 • _resumo às 8h_ · _link da agenda_`;
 
 export type Incoming = { text: string; mediaUrl?: string | null; mediaMime?: string | null };
@@ -144,6 +172,7 @@ async function handleText(ctx: AppCtx, env: DeepSeekEnv, input: string): Promise
   const text = input.trim();
   const state = await loadState(ctx.db);
   const categories = await ctx.store.listCategories();
+  const expenseCategories = await listExpenseCategories(ctx.db);
 
   // Answer to an image preview? Decided by rules, never by the model.
   if (state.batch) {
@@ -157,7 +186,7 @@ async function handleText(ctx: AppCtx, env: DeepSeekEnv, input: string): Promise
     if (!items.length) state.batch = null; // unusable batch: drop it, handle the message normally
   }
 
-  const extracted = await extractActions(env, text, { now: new Date(), tz: ctx.tz, categories, state });
+  const extracted = await extractActions(env, text, { now: new Date(), tz: ctx.tz, categories, state, expenseCategories });
   console.log("[extract]", JSON.stringify(extracted));
   const { actions, blocked } = guardDeletes(text, extracted, state);
   const result = actions.length
@@ -178,12 +207,12 @@ const DELETE_WORDS = /\b(cancel|apag|desmarc|remov|retir|tira|exclu|delet|esquec
  */
 export function guardDeletes(text: string, actions: Action[], state?: State): { actions: Action[]; blocked: string[] } {
   // Answering "qual deles?" for a delete asked in the previous message.
-  const answeringDelete = state?.pick?.action === "delete" || state?.pick?.action === "delete_task";
+  const answeringDelete = state?.pick?.action === "delete" || state?.pick?.action === "delete_task" || state?.pick?.action === "delete_expense";
   if (answeringDelete || DELETE_WORDS.test(normText(text))) return { actions, blocked: [] };
   const blocked: string[] = [];
   const kept = actions.filter((a) => {
-    if (a.type !== "delete" && a.type !== "delete_task") return true;
-    const what = a.search ? `“${a.search}”` : a.type === "delete" ? "esse evento" : "essa tarefa";
+    if (a.type !== "delete" && a.type !== "delete_task" && a.type !== "delete_expense") return true;
+    const what = a.search ? `“${a.search}”` : { delete: "esse evento", delete_task: "essa tarefa", delete_expense: "esse gasto" }[a.type];
     blocked.push(`❓ Não entendi se é pra apagar ${what}. Nada foi apagado. Se for, manda _cancela ${a.search ?? "…"}_.`);
     return false;
   });
@@ -272,6 +301,8 @@ type Turn = {
   pick: PendingPick | null;
   /** Tasks as shown to the model this turn: refs T1… resolve against THIS list. */
   shownTasks: TaskRef[];
+  /** Expenses as shown to the model this turn: refs G1… resolve against THIS list. */
+  shownExpenses: ExpenseRef[];
   /** State after this message. Pending questions only survive if re-asked. */
   next: State;
 };
@@ -292,12 +323,14 @@ export async function executeActions(
     shown: state.focus,
     pick: state.pick ?? null,
     shownTasks: state.tasks ?? [],
+    shownExpenses: state.expenses ?? [],
     next: {
       draft: null,
       pick: null,
       focus: state.focus,
       batch: state.batch ?? null,
       tasks: state.tasks ?? [],
+      expenses: state.expenses ?? [],
       lastList: state.lastList ?? null,
     },
   };
@@ -335,7 +368,7 @@ export async function executeActions(
       // and creates are idempotent. Only user-input problems are answered.
       if (!(err instanceof UserError)) throw err;
       await flushWrites();
-      parts.push(`❌ ${err.message} ${a.type === "create" || a.type === "create_task" ? "Nada foi salvo." : "Nada foi alterado."}`);
+      parts.push(`❌ ${err.message} ${a.type === "create" || a.type === "create_task" || a.type === "add_expense" ? "Nada foi salvo." : "Nada foi alterado."}`);
     }
   }
   await flushWrites();
@@ -611,12 +644,100 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
     }
     case "list_shopping":
       return formatShoppingList(await openItems(ctx.db));
+    case "add_expense":
+      return addExpenseAction(ctx, a, turn);
+    case "update_expense": {
+      const e = await resolveExpense(ctx, a, turn, { action: "update_expense", changes: stripNulls(a.changes) });
+      if ("reply" in e) return e.reply;
+      const pickChanges = turn.pick?.action === "update_expense" && a.ref ? (turn.pick.changes as ExpenseChanges) : {};
+      const c: ExpenseChanges = { ...pickChanges, ...stripNulls(a.changes) };
+      const patch: Partial<ExpenseInput> = {};
+      const cents = toCents(c.amount);
+      if (cents) patch.amount = cents;
+      if (c.description) patch.description = cleanDescription(c.description);
+      if (c.date) {
+        if (c.date > localDate(new Date(), ctx.tz)) throw new UserError("Gasto não pode ser numa data futura.");
+        patch.spentOn = c.date;
+      }
+      if (c.category) {
+        const cat = findExpenseCategory(await listExpenseCategories(ctx.db), c.category);
+        if (!cat) throw new UserError(`Não tenho a categoria de gasto “${c.category}”. Pra criar: _cria categoria de gasto ${c.category}_.`);
+        patch.category = cat.slug;
+      }
+      if (!Object.keys(patch).length) {
+        turn.next.expenses = pushExpenses(turn.next.expenses ?? [], [toExpenseRef(e, localDate(new Date(), ctx.tz))]);
+        turn.next.lastList = "expenses";
+        return `❓ Mudar o quê em *${e.description}*? (valor, categoria, dia…)`;
+      }
+      const row = await updateExpense(ctx.db, e.id, patch);
+      if (!row) throw new UserError("Esse gasto não existe mais.");
+      for (const [k, v] of Object.entries(patch)) {
+        if (row[k as keyof Expense] !== v) throw new Error(`write verification failed: expense ${e.id} ${k} not saved`);
+      }
+      return expenseSaved(ctx, [row], turn, "✏️ *Gasto corrigido*");
+    }
+    case "delete_expense": {
+      const e = await resolveExpense(ctx, a, turn, { action: "delete_expense" });
+      if ("reply" in e) return e.reply;
+      if (!(await deleteExpense(ctx.db, e.id))) throw new UserError("Esse gasto não existe mais.");
+      if (await getExpense(ctx.db, e.id)) throw new Error(`write verification failed: expense ${e.id} still there`);
+      turn.next.expenses = (turn.next.expenses ?? []).filter((x) => x.expenseId !== e.id);
+      return `🗑️ *Gasto apagado:* ${e.description} — ${brl(e.amount)} · ${dayLabel(e.spentOn, localDate(new Date(), ctx.tz))}`;
+    }
+    case "query_expenses": {
+      const today = localDate(new Date(), ctx.tz);
+      const to = a.to < a.from ? a.from : a.to;
+      const cats = await listExpenseCategories(ctx.db);
+      let rows = await expensesBetween(ctx.db, a.from, to);
+      let cat = null as ReturnType<typeof findExpenseCategory>;
+      if (a.category) {
+        cat = findExpenseCategory(cats, a.category);
+        if (!cat) return `❓ Não tenho a categoria de gasto “${a.category}”. Categorias: ${cats.map((c) => `${c.emoji} ${c.name}`).join(", ")}.`;
+        rows = rows.filter((r) => categoryOf(r, cats)?.slug === cat!.slug);
+      }
+      if (a.search) rows = (await searchExpenses(ctx.db, a.search, today)).filter((r) => r.spentOn >= a.from && r.spentOn <= to).reverse();
+      const q = formatQuery(rows, cats, today, expenseTitle(a.from, to, today, cat ? `${cat.emoji} ${cat.name}` : a.search ? `“${a.search}”` : null), { category: cat });
+      if (q.listed.length) {
+        turn.next.expenses = q.listed.slice(0, 10).map((e) => toExpenseRef(e, today));
+        turn.next.lastList = "expenses";
+      }
+      const budget = cat?.budget && a.from.slice(0, 7) === to.slice(0, 7) ? await budgetStatus(ctx.db, a.from, [cat.slug], null) : [];
+      return [q.text, ...budget].join("\n\n");
+    }
+    case "create_expense_category": {
+      const { cat, created } = await createExpenseCategory(ctx.db, a.name, a.emoji);
+      return created ? `🏷️ Categoria de gasto criada: ${cat.emoji} ${cat.name}` : `ℹ️ Já existe a categoria de gasto ${cat.emoji} ${cat.name}`;
+    }
+    case "set_budget": {
+      const today = localDate(new Date(), ctx.tz);
+      const cents = a.amount > 0 ? Math.round(a.amount * 100) : null;
+      if (!a.category) {
+        await updateProfile(ctx.db, { expenseBudget: cents });
+        const p = await loadProfile(ctx.db);
+        if ((p?.expenseBudget ?? null) !== cents) throw new Error("write verification failed: total budget not saved");
+        if (!cents) return "🗑️ Limite total do mês removido.";
+        return [`📊 *Limite total:* ${brl(cents)} por mês`, ...(await budgetStatus(ctx.db, today, [], cents))].join("\n");
+      }
+      const cats = await listExpenseCategories(ctx.db);
+      const cat = findExpenseCategory(cats, a.category);
+      if (!cat) return `❓ Não tenho a categoria de gasto “${a.category}”. Categorias: ${cats.map((c) => `${c.emoji} ${c.name}`).join(", ")}.`;
+      await setCategoryBudget(ctx.db, cat.slug, cents);
+      if (!cents) return `🗑️ Limite de ${cat.emoji} ${cat.name} removido.`;
+      const status = await budgetStatus(ctx.db, today, [cat.slug], null);
+      return `📊 *Limite de ${cat.emoji} ${cat.name}:* ${brl(cents)} por mês\n${status.join("\n")}\n_Aviso quando chegar em 80% e quando estourar._`;
+    }
+    case "list_budgets": {
+      const p = await loadProfile(ctx.db);
+      return formatBudgets(ctx.db, localDate(new Date(), ctx.tz), p?.expenseBudget ?? null);
+    }
     case "settings": {
       const patch: ProfilePatch = {};
       if (a.morning_at) patch.morningAt = a.morning_at;
       if (a.evening_at) patch.eveningAt = a.evening_at;
       if (a.reminder_minutes != null) patch.defaultReminder = a.reminder_minutes;
       if (a.task_nag_minutes != null) patch.taskNagMinutes = nagMinutes(a.task_nag_minutes);
+      if (a.expense_daily != null) patch.expenseDaily = a.expense_daily;
+      if (a.expense_at) patch.expenseAt = a.expense_at;
       if (a.timezone) {
         if (!validTimezone(a.timezone)) return `❓ Não reconheci o fuso “${a.timezone}”. Manda a cidade (ex: _meu fuso é São Paulo_).`;
         patch.tz = a.timezone;
@@ -627,6 +748,8 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
         eveningAt: ctx.user?.eveningAt ?? "21:00",
         defaultReminder: ctx.defaultReminder,
         taskNagMinutes: ctx.taskNagMinutes ?? 0,
+        expenseAt: ctx.user?.expenseAt ?? "22:30",
+        expenseDaily: ctx.user?.expenseDaily ?? true,
       };
       if (Object.keys(patch).length) await updateProfile(ctx.db, patch);
       const p = Object.keys(patch).length ? await loadProfile(ctx.db) : null;
@@ -636,6 +759,8 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
         eveningAt: p?.eveningAt ?? cur.eveningAt,
         defaultReminder: p?.defaultReminder ?? cur.defaultReminder,
         taskNagMinutes: p?.taskNagMinutes ?? cur.taskNagMinutes,
+        expenseAt: p?.expenseAt ?? cur.expenseAt,
+        expenseDaily: p?.expenseDaily ?? cur.expenseDaily,
       };
       const head = Object.keys(patch).length ? "⚙️ *Configuração salva*" : "⚙️ *Suas configurações*";
       return `${head}
@@ -643,6 +768,7 @@ async function run(ctx: AppCtx, action: Action, turn: Turn): Promise<string | nu
 🌙 prévia de amanhã: ${s.eveningAt}
 ⏰ lembrete padrão: ${s.defaultReminder ? `${s.defaultReminder} min antes` : "sem lembrete"}
 🔔 cobrança de tarefas: ${s.taskNagMinutes ? `a cada ${s.taskNagMinutes} min` : "desligada (_me cobra a cada 30 min_ liga)"}
+💸 gastos do dia: ${s.expenseDaily ? s.expenseAt : "desligado (_liga o resumo de gastos_)"} · semana (dom) e mês (último dia) às ${s.expenseAt}
 🌎 fuso: ${s.tz}`;
     }
     case "calendar_link":
@@ -656,6 +782,103 @@ ${ctx.user.feedUrl}
     case "unknown":
       return HELP_TEXT;
   }
+}
+
+type ExpenseAction = Extract<Action, { type: "add_expense" }>;
+type ExpenseChanges = Extract<Action, { type: "update_expense" }>["changes"];
+
+/** Log a spend, check its shopping items off, show the limits it touches. */
+async function addExpenseAction(ctx: AppCtx, a: ExpenseAction, turn: Turn): Promise<string> {
+  const today = localDate(new Date(), ctx.tz);
+  const amount = toCents(a.amount);
+  if (!amount) throw new UserError("Não entendi o valor.");
+  const spentOn = a.date ?? today;
+  if (spentOn > today) throw new UserError("Gasto não pode ser numa data futura. Pra lembrar de pagar algo, use tarefa (_me lembra de pagar … sexta_).");
+  const cats = await listExpenseCategories(ctx.db);
+  const cat = findExpenseCategory(cats, a.category) ?? defaultExpenseCategory(cats);
+  if (!cat) throw new Error("no expense categories");
+  const description = cleanDescription(a.description);
+  const { row } = await addExpense(ctx.db, expenseId(ctx.sourceMessageId, description, amount), { amount, description, category: cat.slug, spentOn });
+  const extra: string[] = [];
+  if (a.shopping_items?.length) {
+    const open = await openItems(ctx.db);
+    const hits = a.shopping_items.map((n) => findItem(open, n)).filter((h) => h.length === 1).map((h) => h[0]!);
+    const unique = [...new Set(hits)];
+    if (unique.length) {
+      await markBought(ctx.db, unique.map((i) => i.id));
+      const left = await openItems(ctx.db);
+      extra.push(`🛒 Tirei da lista: ${joinNames(unique)}${left.length ? ` · falta ${left.length}` : " · lista zerada ✨"}`);
+    }
+  }
+  const head = await expenseSaved(ctx, [row], turn, "💸 *Anotado*");
+  return [head, ...extra].join("\n");
+}
+
+/** Confirmation re-read from the DB + the limits the rows touch. */
+async function expenseSaved(ctx: AppCtx, rows: Expense[], turn: Turn, head: string): Promise<string> {
+  const today = localDate(new Date(), ctx.tz);
+  const cats = await listExpenseCategories(ctx.db);
+  const fresh: Expense[] = [];
+  for (const r of rows) {
+    const row = await getExpense(ctx.db, r.id);
+    if (!row) throw new Error(`write verification failed: expense ${r.id} not found`);
+    fresh.push(row);
+  }
+  turn.next.expenses = pushExpenses(turn.next.expenses ?? [], fresh.map((e) => toExpenseRef(e, today)).reverse());
+  turn.next.lastList = "expenses";
+  const lines = fresh.map((e) => {
+    const c = categoryOf(e, cats);
+    return `${head}: ${brl(e.amount)} · ${c?.emoji ?? "💸"} ${c?.name ?? e.category}\n${e.description} · ${dayLabel(e.spentOn, today)}`;
+  });
+  const p = await loadProfile(ctx.db);
+  const limits: string[] = [];
+  for (const month of new Set(fresh.map((e) => e.spentOn.slice(0, 7)))) {
+    const inMonth = fresh.filter((e) => e.spentOn.startsWith(month));
+    const day = inMonth[0]!.spentOn;
+    limits.push(...(await budgetStatus(ctx.db, day, inMonth.map((e) => categoryOf(e, cats)?.slug ?? e.category), p?.expenseBudget ?? null)));
+  }
+  return [...lines, ...limits].join("\n");
+}
+
+/** "Gastos de hoje" · "Gastos de novembro" · "Gastos de 17/11 a 23/11 · 🛒 Mercado" */
+function expenseTitle(from: string, to: string, today: string, what: string | null): string {
+  let when: string;
+  if (from === to) when = from === today ? "de hoje" : `de ${dayLabel(from, today)}`;
+  else if (from.endsWith("-01") && from.slice(0, 7) === to.slice(0, 7)) when = `de ${monthName(from)}${to === today ? " (até hoje)" : ""}`;
+  else when = `de ${shortDatePt(from)} a ${shortDatePt(to)}`;
+  return `Gastos ${when}${what ? ` · ${what}` : ""}`;
+}
+
+/** Same rules as tasks: a name wins over a ref; several matches → numbered question (G1…). */
+async function resolveExpense(
+  ctx: AppCtx,
+  a: { ref?: string | null; search?: string | null; on_date?: string | null },
+  turn: Turn,
+  pick: PendingPick,
+): Promise<Expense | { reply: string }> {
+  const today = localDate(new Date(), ctx.tz);
+  const cats = await listExpenseCategories(ctx.db);
+  if (a.search) {
+    const matches = await searchExpenses(ctx.db, a.search, today, a.on_date);
+    if (matches.length === 1) return matches[0]!;
+    if (!matches.length) return { reply: `❓ Não achei nenhum gasto com “${a.search}”${a.on_date ? ` em ${shortDatePt(a.on_date)}` : " nos últimos 90 dias"}. Nada foi alterado.` };
+    const shown = matches.slice(0, 9);
+    turn.next.expenses = shown.map((e) => toExpenseRef(e, today));
+    turn.next.lastList = "expenses";
+    turn.next.pick = pick;
+    return {
+      reply: `❓ Achei ${matches.length} gastos com “${a.search}”. Qual? (responde com o número)\n${shown.map((e, i) => `${i + 1}. ${expenseLine(e, cats, today)}`).join("\n")}`,
+    };
+  }
+  if (a.ref) {
+    const n = Number(/^G?(\d+)$/i.exec(a.ref.trim())?.[1]);
+    const ref = turn.shownExpenses[n - 1];
+    if (!ref) return { reply: "❓ Não sei qual gasto. Manda com o nome (ex: _apaga o gasto do uber_) ou peça _gastos de hoje_." };
+    const e = await getExpense(ctx.db, ref.expenseId);
+    if (!e) return { reply: `❓ *${ref.label.split(" · ")[0]}* não existe mais. Nada foi alterado.` };
+    return e;
+  }
+  return { reply: "❓ Não sei qual gasto. Manda com o nome (ex: _apaga o gasto do uber_) ou peça _gastos de hoje_." };
 }
 
 /**

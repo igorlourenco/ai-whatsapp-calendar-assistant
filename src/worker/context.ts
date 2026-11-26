@@ -22,7 +22,7 @@ export async function icloudAccount(env: Env, p: Profile | null): Promise<ICloud
  * in the object's SQLite.
  */
 export async function makeCtx(env: Env, db: Db, p: Profile | null): Promise<AppCtx> {
-  const { tz, defaultReminder, taskNagMinutes, morningAt, eveningAt } = userSettings(env, p);
+  const { tz, defaultReminder, taskNagMinutes, morningAt, eveningAt, expenseAt, expenseDaily } = userSettings(env, p);
   const store = isGuest(p) ? sqliteStore(db, tz, defaultReminder) : icloudStore(await icloudAccount(env, p), db, tz, defaultReminder);
-  return { store, db, tz, defaultReminder, taskNagMinutes, user: { guest: isGuest(p), feedUrl: p?.feedUrl ?? null, morningAt, eveningAt } };
+  return { store, db, tz, defaultReminder, taskNagMinutes, user: { guest: isGuest(p), feedUrl: p?.feedUrl ?? null, morningAt, eveningAt, expenseAt, expenseDaily } };
 }
