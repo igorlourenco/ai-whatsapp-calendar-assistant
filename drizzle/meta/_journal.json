@@ -92,6 +92,13 @@
       "when": 1795269025363,
       "tag": "0012_drop_login_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1795729534474,
+      "tag": "0013_expenses",
+      "breakpoints": true
     }
   ]
 }

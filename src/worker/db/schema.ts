@@ -51,10 +51,13 @@ export const reminderLog = sqliteTable(
   (t) => [primaryKey({ columns: [t.eventId, t.occurrenceStart] })],
 );
 
+export type DigestKind = "morning" | "evening" | "expense_day" | "expense_week" | "expense_month";
+
 export const digestLog = sqliteTable(
   "digest_log",
   {
-    kind: text("kind").$type<"morning" | "evening">().notNull(),
+    /** expense_*: the 22:30 spending summaries (day / Sunday week / last-day month). */
+    kind: text("kind").$type<DigestKind>().notNull(),
     /** YYYY-MM-DD in the configured timezone. */
     localDate: text("local_date").notNull(),
     sentAt: ts("sent_at").notNull().$defaultFn(now),
@@ -127,6 +130,8 @@ export type DraftCreate = {
   reminder_minutes?: number | null;
 };
 export type FocusItem = { eventId: string; occurrenceStart: string; label: string };
+/** An expense recently logged/changed/listed, exposed to the model as G1, G2… */
+export type ExpenseRef = { expenseId: string; label: string };
 /** A task recently created/changed/listed, exposed to the model as T1, T2… */
 export type TaskRef = { taskId: string; label: string };
 export type PendingPick =
@@ -134,7 +139,9 @@ export type PendingPick =
   | { action: "update"; changes: Record<string, unknown> }
   | { action: "complete_task" }
   | { action: "delete_task" }
-  | { action: "update_task"; changes: Record<string, unknown> };
+  | { action: "update_task"; changes: Record<string, unknown> }
+  | { action: "delete_expense" }
+  | { action: "update_expense"; changes: Record<string, unknown> };
 
 /**
  * Events read from an image, shown to the user as a numbered preview and NOT
@@ -154,8 +161,10 @@ export const assistantState = sqliteTable("assistant_state", {
   batchAt: ts("batch_at"),
   taskFocus: text("task_focus", { mode: "json" }).$type<TaskRef[]>().notNull().default([]),
   taskFocusAt: ts("task_focus_at"),
-  /** Which numbered list the user saw last, so a bare "o 2" means E2 or T2. */
-  lastList: text("last_list").$type<"events" | "tasks">(),
+  expenseFocus: text("expense_focus", { mode: "json" }).$type<ExpenseRef[]>().notNull().default([]),
+  expenseFocusAt: ts("expense_focus_at"),
+  /** Which numbered list the user saw last (or touched last, for expenses), so a bare "o 2" means E2, T2 or G2. */
+  lastList: text("last_list").$type<"events" | "tasks" | "expenses">(),
 });
 
 /**
@@ -213,6 +222,43 @@ export const shoppingItems = sqliteTable(
 export type ShoppingItem = typeof shoppingItems.$inferSelect;
 
 /**
+ * Spending categories. Separate from the calendar ones: seeded by the
+ * migration with a fixed starter set, the user can add more. budget = monthly
+ * limit in cents (null = none), warned about at 80% and 100%.
+ */
+export const expenseCategories = sqliteTable("expense_categories", {
+  slug: text("slug").primaryKey(),
+  name: text("name").notNull(),
+  emoji: text("emoji").notNull(),
+  /** What belongs here; shown to the model to pick one. */
+  description: text("description"),
+  isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+  budget: integer("budget"),
+  createdAt: ts("created_at").notNull().$defaultFn(now),
+});
+
+export type ExpenseCategory = typeof expenseCategories.$inferSelect;
+
+/** What the user spent ("gastei 45 no ifood"). Amounts in BRL cents. */
+export const expenses = sqliteTable(
+  "expenses",
+  {
+    /** `<messageId>:<normalized description>:<cents>` when from a message (idempotent retries). */
+    id: text("id").primaryKey(),
+    amount: integer("amount").notNull(),
+    description: text("description").notNull(),
+    /** expense_categories.slug; unknown = the default one. */
+    category: text("category").notNull(),
+    /** YYYY-MM-DD (local) the money was spent. */
+    spentOn: text("spent_on").notNull(),
+    createdAt: ts("created_at").notNull().$defaultFn(now),
+  },
+  (t) => [index("expenses_spent_idx").on(t.spentOn)],
+);
+
+export type Expense = typeof expenses.$inferSelect;
+
+/**
  * Events of users without iCloud (everyone but the owner). Same shape the
  * CalendarStore exposes; served to their phones as a read-only ICS feed.
  */
@@ -258,6 +304,12 @@ export const profile = sqliteTable("profile", {
   defaultReminder: integer("default_reminder"),
   /** Minutes between task nags; 0 = off, null = deployment default. */
   taskNagMinutes: integer("task_nag_minutes"),
+  /** Daily spending summary on/off (null = on). Week/month summaries always go out. */
+  expenseDaily: integer("expense_daily", { mode: "boolean" }),
+  /** HH:mm of the spending summaries; null = deployment default (22:30). */
+  expenseAt: text("expense_at"),
+  /** Monthly limit for all spending, in cents; null = none. */
+  expenseBudget: integer("expense_budget"),
   /** webcal:// link of this user's ICS feed (storage "local" only). */
   feedUrl: text("feed_url"),
   /**

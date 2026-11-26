@@ -5,6 +5,8 @@ import {
   assistantState,
   categories,
   digestLog,
+  expenseCategories,
+  expenses,
   inboundMessages,
   messageEvents,
   reminderLog,
@@ -27,18 +29,22 @@ const TABLES = {
   message_events: messageEvents,
   tasks,
   shopping_items: shoppingItems,
+  expense_categories: expenseCategories,
+  expenses,
 } as const;
 
 /** Timestamp columns per table (JSON carries them as ISO strings). */
 const DATE_COLS: Record<keyof typeof TABLES, string[]> = {
   categories: ["createdAt"],
   inbound_messages: ["nextAttemptAt", "receivedAt", "processedAt"],
-  assistant_state: ["draftAt", "focusAt", "batchAt", "taskFocusAt"],
+  assistant_state: ["draftAt", "focusAt", "batchAt", "taskFocusAt", "expenseFocusAt"],
   reminder_log: ["occurrenceStart", "sentAt"],
   digest_log: ["sentAt"],
   message_events: ["createdAt"],
   tasks: ["remindedAt", "createdAt", "doneAt"],
   shopping_items: ["createdAt", "boughtAt"],
+  expense_categories: ["createdAt"],
+  expenses: ["createdAt"],
 };
 
 export type ExportData = { exportedAt: string; tables: Partial<Record<keyof typeof TABLES, Record<string, unknown>[]>> };
